@@ -1,0 +1,18 @@
+{
+  "appName": "ai-trader",
+  "localPath": "C:\\Users\\eric\\Documents\\trader",
+  "remotePath": "/root/ai-trader",
+  "remoteRepo": "git@github.com:7qhwc6trf8-art/ai-trader.git",
+  "branch": "master",
+  "sshHost": "79.133.46.224",
+  "sshPort": 22,
+  "sshUser": "root",
+  "sshKey": "C:\\Users\\eric\\.ssh\\id_ed25519",
+  "nodeVersion": "22",
+  "pm2Entry": "index.js",
+  "ecosystemFile": "ecosystem.config.js",
+  "useEcosystem": true,
+  "runTests": false,
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build --if-present"
+}
