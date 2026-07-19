@@ -1,6 +1,6 @@
 'use strict';
 
-// V16 coin universe. Unsupported or delisted symbols are skipped safely by the
+// V16.1 coin universe. Unsupported or delisted symbols are skipped safely by the
 // existing market-data error handling. Override with AUTO_TRADE_COINS in .env.
 const DEFAULT_COINS = [
   'BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'ADA', 'AVAX', 'LINK', 'DOT',

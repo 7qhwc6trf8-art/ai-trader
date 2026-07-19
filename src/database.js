@@ -1,6 +1,6 @@
 'use strict';
 
-const { SQLiteDatabase } = require('./sqlite_adapter');
+const Database = require('better-sqlite3');
 const path = require('path');
 
 class DatabaseManager {
@@ -9,7 +9,7 @@ class DatabaseManager {
       ? path.resolve(process.env.TRADING_DB_PATH)
       : path.join(__dirname, '../trading.db');
 
-    this.db = new SQLiteDatabase(databasePath);
+    this.db = new Database(databasePath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('busy_timeout = 5000');
@@ -89,6 +89,46 @@ class DatabaseManager {
         exposure REAL
       );
 
+      CREATE TABLE IF NOT EXISTS trade_signal_context (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        orderId TEXT UNIQUE,
+        coin TEXT,
+        action TEXT,
+        confidence REAL DEFAULT 0,
+        executionScore REAL DEFAULT 0,
+        marketCondition TEXT,
+        openedAt TEXT,
+        closedAt TEXT,
+        pnlPercent REAL DEFAULT 0,
+        status TEXT DEFAULT 'OPEN'
+      );
+
+      CREATE TABLE IF NOT EXISTS account_daily_stats (
+        date TEXT PRIMARY KEY,
+        timezone TEXT NOT NULL,
+        openingEquity REAL DEFAULT 0,
+        closingEquity REAL DEFAULT 0,
+        latestEquity REAL DEFAULT 0,
+        realizedPnl REAL DEFAULT 0,
+        grossProfit REAL DEFAULT 0,
+        grossLoss REAL DEFAULT 0,
+        fees REAL DEFAULT 0,
+        trades INTEGER DEFAULT 0,
+        wins INTEGER DEFAULT 0,
+        losses INTEGER DEFAULT 0,
+        returnPct REAL DEFAULT 0,
+        source TEXT,
+        isComplete INTEGER DEFAULT 0,
+        firstSeenAt TEXT,
+        lastSeenAt TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS statistics_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updatedAt TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY,
         appliedAt TEXT NOT NULL
@@ -160,14 +200,54 @@ class DatabaseManager {
         exposure: 'REAL'
       });
 
+      this.ensureColumns('trade_signal_context', {
+        orderId: 'TEXT',
+        coin: 'TEXT',
+        action: 'TEXT',
+        confidence: 'REAL DEFAULT 0',
+        executionScore: 'REAL DEFAULT 0',
+        marketCondition: 'TEXT',
+        openedAt: 'TEXT',
+        closedAt: 'TEXT',
+        pnlPercent: 'REAL DEFAULT 0',
+        status: "TEXT DEFAULT 'OPEN'"
+      });
+
+      this.ensureColumns('account_daily_stats', {
+        date: 'TEXT',
+        timezone: "TEXT DEFAULT 'UTC'",
+        openingEquity: 'REAL DEFAULT 0',
+        closingEquity: 'REAL DEFAULT 0',
+        latestEquity: 'REAL DEFAULT 0',
+        realizedPnl: 'REAL DEFAULT 0',
+        grossProfit: 'REAL DEFAULT 0',
+        grossLoss: 'REAL DEFAULT 0',
+        fees: 'REAL DEFAULT 0',
+        trades: 'INTEGER DEFAULT 0',
+        wins: 'INTEGER DEFAULT 0',
+        losses: 'INTEGER DEFAULT 0',
+        returnPct: 'REAL DEFAULT 0',
+        source: 'TEXT',
+        isComplete: 'INTEGER DEFAULT 0',
+        firstSeenAt: 'TEXT',
+        lastSeenAt: 'TEXT'
+      });
+
+      this.ensureColumns('statistics_meta', {
+        key: 'TEXT',
+        value: 'TEXT',
+        updatedAt: 'TEXT'
+      });
+
       this.migratePositionEntryColumns();
       this.normalizePositionRows();
+      this.normalizeTradeRows();
       this.createIndexes();
 
       this.db.prepare(`
         INSERT OR IGNORE INTO schema_migrations (version, appliedAt)
         VALUES (?, ?)
-      `).run(2, new Date().toISOString());
+      `).run(3, new Date().toISOString());
     });
 
     migrate();
@@ -244,10 +324,13 @@ class DatabaseManager {
     }
   }
 
-  createIndexes() {
-    // Legacy builds could insert the same exchange close repeatedly because
-    // tradeId was not constrained. Keep the latest row before enforcing
-    // idempotent writes. NULL tradeIds remain allowed for legacy/manual rows.
+  normalizeTradeRows() {
+    const columns = new Set(
+      this.db.prepare('PRAGMA table_info("trades")').all()
+        .map(column => column.name)
+    );
+    if (!columns.has('id') || !columns.has('tradeId')) return;
+
     this.db.exec(`
       DELETE FROM trades
       WHERE tradeId IS NOT NULL
@@ -258,11 +341,11 @@ class DatabaseManager {
           WHERE tradeId IS NOT NULL AND TRIM(tradeId) != ''
           GROUP BY tradeId
         );
+    `);
+  }
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_trade_id_unique
-        ON trades(tradeId)
-        WHERE tradeId IS NOT NULL AND TRIM(tradeId) != '';
-
+  createIndexes() {
+    this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_coin_unique
         ON positions(coin);
 
@@ -277,6 +360,16 @@ class DatabaseManager {
 
       CREATE INDEX IF NOT EXISTS idx_balance_snapshots_timestamp
         ON balance_snapshots(timestamp);
+
+      CREATE INDEX IF NOT EXISTS idx_account_daily_stats_date
+        ON account_daily_stats(date);
+
+      CREATE INDEX IF NOT EXISTS idx_trade_signal_context_lookup
+        ON trade_signal_context(coin, status, openedAt);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_trade_id_unique
+        ON trades(tradeId)
+        WHERE tradeId IS NOT NULL AND TRIM(tradeId) != '';
     `);
   }
 
@@ -374,6 +467,94 @@ class DatabaseManager {
         SELECT * FROM performance
         ORDER BY date DESC
         LIMIT ?
+      `),
+
+      saveSignalContext: this.db.prepare(`
+        INSERT INTO trade_signal_context (
+          orderId, coin, action, confidence, executionScore, marketCondition, openedAt, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN')
+        ON CONFLICT(orderId) DO UPDATE SET
+          coin = excluded.coin,
+          action = excluded.action,
+          confidence = excluded.confidence,
+          executionScore = excluded.executionScore,
+          marketCondition = excluded.marketCondition,
+          openedAt = COALESCE(trade_signal_context.openedAt, excluded.openedAt)
+      `),
+
+      findOpenSignalContext: this.db.prepare(`
+        SELECT * FROM trade_signal_context
+        WHERE coin = ? AND UPPER(COALESCE(status, 'OPEN')) = 'OPEN'
+        ORDER BY openedAt DESC
+        LIMIT 1
+      `),
+
+      closeSignalContext: this.db.prepare(`
+        UPDATE trade_signal_context
+        SET status = 'CLOSED', closedAt = ?, pnlPercent = ?
+        WHERE id = ?
+      `),
+
+      countSignalContextsSince: this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM trade_signal_context
+        WHERE openedAt >= ?
+      `),
+
+      upsertDailyStat: this.db.prepare(`
+        INSERT INTO account_daily_stats (
+          date, timezone, openingEquity, closingEquity, latestEquity,
+          realizedPnl, grossProfit, grossLoss, fees, trades, wins, losses,
+          returnPct, source, isComplete, firstSeenAt, lastSeenAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date) DO UPDATE SET
+          timezone = excluded.timezone,
+          openingEquity = excluded.openingEquity,
+          closingEquity = excluded.closingEquity,
+          latestEquity = excluded.latestEquity,
+          realizedPnl = excluded.realizedPnl,
+          grossProfit = excluded.grossProfit,
+          grossLoss = excluded.grossLoss,
+          fees = excluded.fees,
+          trades = excluded.trades,
+          wins = excluded.wins,
+          losses = excluded.losses,
+          returnPct = excluded.returnPct,
+          source = excluded.source,
+          isComplete = excluded.isComplete,
+          firstSeenAt = COALESCE(account_daily_stats.firstSeenAt, excluded.firstSeenAt),
+          lastSeenAt = excluded.lastSeenAt
+      `),
+
+      getDailyStats: this.db.prepare(`
+        SELECT * FROM account_daily_stats
+        WHERE date >= ? AND date <= ?
+        ORDER BY date ASC
+      `),
+
+      getRecentDailyStats: this.db.prepare(`
+        SELECT * FROM account_daily_stats
+        ORDER BY date DESC
+        LIMIT ?
+      `),
+
+      deleteDailyStatsBefore: this.db.prepare(`
+        DELETE FROM account_daily_stats
+        WHERE date < ?
+      `),
+
+      getStatsCoverage: this.db.prepare(`
+        SELECT MIN(date) AS firstDate, MAX(date) AS lastDate, COUNT(*) AS days
+        FROM account_daily_stats
+      `),
+
+      setStatisticsMeta: this.db.prepare(`
+        INSERT INTO statistics_meta (key, value, updatedAt) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt
+      `),
+
+      getStatisticsMeta: this.db.prepare(`
+        SELECT value, updatedAt FROM statistics_meta WHERE key = ?
       `)
     };
   }
@@ -458,18 +639,37 @@ class DatabaseManager {
       SELECT
         COUNT(*) AS totalTrades,
         SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS winningTrades,
-        COALESCE(SUM(pnl), 0) AS totalPnl
+        SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) AS losingTrades,
+        COALESCE(SUM(pnl), 0) AS totalPnl,
+        COALESCE(SUM(CASE WHEN pnl > 0 THEN pnl ELSE 0 END), 0) AS grossProfit,
+        ABS(COALESCE(SUM(CASE WHEN pnl < 0 THEN pnl ELSE 0 END), 0)) AS grossLoss,
+        COALESCE(MAX(pnl), 0) AS largestWin,
+        COALESCE(MIN(pnl), 0) AS largestLoss,
+        COALESCE(AVG(CASE WHEN pnl > 0 THEN pnl END), 0) AS averageWin,
+        COALESCE(AVG(CASE WHEN pnl < 0 THEN pnl END), 0) AS averageLoss
       FROM trades
+      WHERE UPPER(COALESCE(status, 'CLOSED')) = 'CLOSED'
     `).get();
 
     const totalTrades = Number(stats?.totalTrades) || 0;
     const winningTrades = Number(stats?.winningTrades) || 0;
+    const losingTrades = Number(stats?.losingTrades) || 0;
+    const grossProfit = this.toFiniteNumber(stats?.grossProfit);
+    const grossLoss = this.toFiniteNumber(stats?.grossLoss);
 
     return {
       totalTrades,
       winningTrades,
+      losingTrades,
       winRate: totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0,
-      totalPnl: this.toFiniteNumber(stats?.totalPnl)
+      totalPnl: this.toFiniteNumber(stats?.totalPnl),
+      grossProfit,
+      grossLoss,
+      profitFactor: grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? Infinity : 0),
+      largestWin: this.toFiniteNumber(stats?.largestWin),
+      largestLoss: this.toFiniteNumber(stats?.largestLoss),
+      averageWin: this.toFiniteNumber(stats?.averageWin),
+      averageLoss: this.toFiniteNumber(stats?.averageLoss)
     };
   }
 
@@ -519,6 +719,79 @@ class DatabaseManager {
     return this.statements.getPerformanceHistory.all(safeLimit);
   }
 
+  saveSignalContext(context = {}) {
+    if (!context.orderId || !context.coin) return null;
+    return this.statements.saveSignalContext.run(
+      String(context.orderId),
+      String(context.coin),
+      String(context.action || '').toUpperCase(),
+      this.toFiniteNumber(context.confidence),
+      this.toFiniteNumber(context.executionScore),
+      String(context.marketCondition || 'UNKNOWN').toUpperCase(),
+      context.openedAt || new Date().toISOString()
+    );
+  }
+
+  findOpenSignalContext(coin) {
+    return this.statements.findOpenSignalContext.get(String(coin)) || null;
+  }
+
+  closeSignalContext(id, pnlPercent, closedAt = new Date().toISOString()) {
+    return this.statements.closeSignalContext.run(closedAt, this.toFiniteNumber(pnlPercent), id);
+  }
+
+  countSignalContextsSince(isoTimestamp) {
+    return Number(this.statements.countSignalContextsSince.get(String(isoTimestamp))?.count) || 0;
+  }
+
+  upsertDailyStat(stat = {}) {
+    const now = new Date().toISOString();
+    return this.statements.upsertDailyStat.run(
+      stat.date,
+      stat.timezone || 'UTC',
+      this.toFiniteNumber(stat.openingEquity),
+      this.toFiniteNumber(stat.closingEquity),
+      this.toFiniteNumber(stat.latestEquity),
+      this.toFiniteNumber(stat.realizedPnl),
+      this.toFiniteNumber(stat.grossProfit),
+      this.toFiniteNumber(stat.grossLoss),
+      this.toFiniteNumber(stat.fees),
+      Math.max(0, Math.trunc(this.toFiniteNumber(stat.trades))),
+      Math.max(0, Math.trunc(this.toFiniteNumber(stat.wins))),
+      Math.max(0, Math.trunc(this.toFiniteNumber(stat.losses))),
+      this.toFiniteNumber(stat.returnPct),
+      stat.source || 'local',
+      stat.isComplete ? 1 : 0,
+      stat.firstSeenAt || now,
+      stat.lastSeenAt || now
+    );
+  }
+
+  getDailyStats(startDate = '0000-01-01', endDate = '9999-12-31') {
+    return this.statements.getDailyStats.all(startDate, endDate);
+  }
+
+  getRecentDailyStats(limit = 30) {
+    const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 30));
+    return this.statements.getRecentDailyStats.all(safeLimit);
+  }
+
+  deleteDailyStatsBefore(date) {
+    return this.statements.deleteDailyStatsBefore.run(String(date));
+  }
+
+  getStatsCoverage() {
+    return this.statements.getStatsCoverage.get() || { firstDate: null, lastDate: null, days: 0 };
+  }
+
+  setStatisticsMeta(key, value) {
+    return this.statements.setStatisticsMeta.run(String(key), String(value ?? ''), new Date().toISOString());
+  }
+
+  getStatisticsMeta(key) {
+    return this.statements.getStatisticsMeta.get(String(key)) || null;
+  }
+
   clearAll() {
     const clear = this.db.transaction(() => {
       this.db.exec(`
@@ -527,6 +800,9 @@ class DatabaseManager {
         DELETE FROM ai_decisions;
         DELETE FROM balance_snapshots;
         DELETE FROM performance;
+        DELETE FROM account_daily_stats;
+        DELETE FROM statistics_meta;
+        DELETE FROM trade_signal_context;
       `);
     });
 

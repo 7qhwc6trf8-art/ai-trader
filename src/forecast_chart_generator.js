@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { createCanvas } = require('./canvas_adapter');
+const { createCanvas } = require('canvas');
 const { calculateFibonacci } = require('./technical_tools');
 
 function finite(value, fallback = 0) {

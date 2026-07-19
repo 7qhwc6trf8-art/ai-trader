@@ -1,6 +1,6 @@
 const ccxt = require("ccxt");
 const logger = require('./logger');
-const { config } = require('./core/config');
+const { deduplicateOrders } = require('./order_utils');
 
 class BybitClient {
   constructor() {
@@ -16,11 +16,7 @@ class BybitClient {
     this.lastBalanceFetch = null;
     this.cachedBalance = null;
     this.connectionPromise = null;
-    this.lastPositionsError = null;
     this.marketType = 'swap';
-    this.positionMode = config.bybit.positionMode;
-    this.demo = config.bybit.demo;
-    this.sandbox = config.bybit.sandbox;
   }
 
   connect(apiKey, apiSecret, mode = 'ro') {
@@ -30,7 +26,7 @@ class BybitClient {
       this.mode = mode;
       
       console.log(`🔌 Connecting to Bybit in ${mode.toUpperCase()} mode...`);
-      console.log(`API credentials: ${apiKey && apiSecret ? 'configured' : 'MISSING'}`);
+      console.log(`📝 API Key: ${apiKey ? apiKey.substring(0, 8) + '...' : 'MISSING'}`);
       
       const requestedMarketType = String(process.env.BYBIT_MARKET_TYPE || 'swap').toLowerCase();
       this.marketType = ['swap', 'spot'].includes(requestedMarketType)
@@ -45,16 +41,9 @@ class BybitClient {
           defaultType: this.marketType,
           defaultSubType: this.marketType === 'swap' ? 'linear' : undefined,
           defaultSettle: this.marketType === 'swap' ? 'USDT' : undefined,
-          recvWindow: config.bybit.recvWindow 
+          recvWindow: 5000 
         }
       });
-
-      if (this.sandbox && typeof this.exchange.setSandboxMode === 'function') {
-        this.exchange.setSandboxMode(true);
-      }
-      if (this.demo && typeof this.exchange.enableDemoTrading === 'function') {
-        this.exchange.enableDemoTrading(true);
-      }
       
       // Keep connect() compatible with the existing synchronous startup code,
       // but retain the promise so every balance/order call can await the real
@@ -246,19 +235,6 @@ class BybitClient {
       : `${base}/USDT`;
   }
 
-  getPositionIdx(actionOrSide) {
-    if (this.positionMode !== 'hedge') return 0;
-    const value = String(actionOrSide || '').toUpperCase();
-    return ['BUY', 'LONG'].includes(value) ? 1 : 2;
-  }
-
-  triggerByValue() {
-    const value = String(config.bybit.triggerBy || 'markprice').toLowerCase();
-    if (value === 'lastprice') return 'LastPrice';
-    if (value === 'indexprice') return 'IndexPrice';
-    return 'MarkPrice';
-  }
-
   firstPositiveNumber(...values) {
     for (const value of values) {
       const numeric = this.toFiniteNumber(value, NaN);
@@ -412,7 +388,7 @@ class BybitClient {
   async getPortfolio() {
     await this.waitForConnection();
     if (!this.isConnected) {
-      return { totalValue: 0, availableToTrade: 0, positions: [], mode: this.mode, unavailable: true, error: this.connectionError || 'Not connected to Bybit' };
+      return { totalValue: 0, availableToTrade: 0, positions: [], mode: this.mode, error: this.connectionError };
     }
     
     try {
@@ -420,22 +396,11 @@ class BybitClient {
 
       if (this.marketType === 'swap') {
         const positions = (await this.getPositions()).filter(position => this.toFiniteNumber(position.size) > 0);
-        if (this.lastPositionsError) {
-          return {
-            totalValue: balance.totalUSD,
-            availableToTrade: balance.tradableUSD,
-            positions: [],
-            mode: this.mode,
-            unavailable: true,
-            error: `Bybit positions are unavailable: ${this.lastPositionsError}`
-          };
-        }
         return {
           totalValue: balance.totalUSD,
           availableToTrade: balance.tradableUSD,
           positions,
-          mode: this.mode,
-          unavailable: false
+          mode: this.mode
         };
       }
 
@@ -466,7 +431,7 @@ class BybitClient {
       };
     } catch (error) {
       logger.error('Portfolio fetch error:', error);
-      return { totalValue: 0, availableToTrade: 0, positions: [], mode: this.mode, unavailable: true, error: error.message };
+      return { totalValue: 0, positions: [], mode: this.mode };
     }
   }
 
@@ -698,8 +663,8 @@ class BybitClient {
         logger.error('Orders fetch error:', reason || 'All Bybit order endpoints failed');
       }
       
-      const sorted = allOrders
-        .sort((a, b) => b.timestamp - a.timestamp)
+      const sorted = deduplicateOrders(allOrders)
+        .sort((a, b) => this.toFiniteNumber(b.timestamp) - this.toFiniteNumber(a.timestamp))
         .slice(0, limit);
       
       return sorted.map(o => ({
@@ -766,7 +731,6 @@ class BybitClient {
   async getPositions(symbol = null) {
     await this.waitForConnection();
     if (!this.isConnected) {
-      this.lastPositionsError = this.connectionError || 'Not connected to Bybit';
       return [];
     }
 
@@ -776,11 +740,9 @@ class BybitClient {
       const positions = await this.exchange.fetchPositions(requestedSymbols);
       
       if (!positions || !Array.isArray(positions)) {
-        this.lastPositionsError = 'Bybit returned an invalid positions payload';
         return [];
       }
 
-      this.lastPositionsError = null;
       return positions
         .filter(pos => this.toFiniteNumber(pos?.contracts ?? pos?.size) > 0)
         .map(pos => {
@@ -803,16 +765,10 @@ class BybitClient {
             percentage: this.toFiniteNumber(pos.percentage),
             leverage: this.toFiniteNumber(pos.leverage, 1),
             liquidationPrice: this.toFiniteNumber(pos.liquidationPrice),
-            margin: this.toFiniteNumber(pos.margin),
-            notional: this.toFiniteNumber(pos.notional, this.toFiniteNumber(pos.contracts ?? pos.size) * this.toFiniteNumber(pos.markPrice ?? pos.entryPrice)),
-            stopLoss: this.toFiniteNumber(pos.stopLossPrice ?? pos.info?.stopLoss),
-            takeProfit: this.toFiniteNumber(pos.takeProfitPrice ?? pos.info?.takeProfit),
-            positionIdx: this.toFiniteNumber(pos.info?.positionIdx, this.getPositionIdx(pos.side)),
-            raw: pos
+            margin: this.toFiniteNumber(pos.margin)
           };
         });
     } catch (error) {
-      this.lastPositionsError = error.message;
       logger.error('POSITIONS_FETCH', error);
       return [];
     }
@@ -832,65 +788,6 @@ class BybitClient {
     }
   }
 
-  async setTradingStop(symbol, { stopLoss, takeProfit, action, positionIdx } = {}) {
-    await this.waitForConnection();
-    if (!this.isConnected) return { success: false, error: 'Not connected to Bybit' };
-    if (this.mode === 'ro') return { success: false, error: 'READ-ONLY mode - cannot set trading stop' };
-
-    try {
-      await this.exchange.loadMarkets();
-      const marketSymbol = this.normalizeSymbol(symbol);
-      const market = this.exchange.market(marketSymbol);
-      const method = this.exchange.privatePostV5PositionTradingStop;
-      if (typeof method !== 'function') {
-        return { success: false, error: 'Installed CCXT adapter does not expose Bybit V5 set-trading-stop endpoint' };
-      }
-
-      const params = {
-        category: 'linear',
-        symbol: market.id,
-        tpslMode: 'Full',
-        positionIdx: Number.isInteger(Number(positionIdx)) ? Number(positionIdx) : this.getPositionIdx(action),
-        tpTriggerBy: this.triggerByValue(),
-        slTriggerBy: this.triggerByValue()
-      };
-      if (Number(stopLoss) > 0) params.stopLoss = String(stopLoss);
-      if (Number(takeProfit) > 0) params.takeProfit = String(takeProfit);
-
-      const response = await method.call(this.exchange, params);
-      const retCode = Number(response?.retCode ?? response?.info?.retCode ?? 0);
-      if (Number.isFinite(retCode) && retCode !== 0) {
-        return { success: false, error: response?.retMsg || `Bybit retCode ${retCode}`, response };
-      }
-      return { success: true, response, params };
-    } catch (error) {
-      logger.error('BYBIT_SET_TRADING_STOP', error, { symbol });
-      return { success: false, error: error.message };
-    }
-  }
-
-  async verifyPositionProtection(symbol, expected = {}) {
-    const positions = await this.getPositions(symbol);
-    const expectedIdx = Number.isInteger(Number(expected.positionIdx))
-      ? Number(expected.positionIdx)
-      : this.getPositionIdx(expected.action);
-    const position = positions.find(item => {
-      if (this.positionMode !== 'hedge') return true;
-      return Number(item.positionIdx) === expectedIdx;
-    });
-    if (!position) return { protected: false, error: 'Position not found after fill', position: null };
-
-    const expectedStop = Number(expected.stopLoss);
-    const expectedTarget = Number(expected.takeProfit);
-    const stop = Number(position.stopLoss);
-    const target = Number(position.takeProfit);
-    const stopTolerance = expectedStop > 0 ? Math.max(expectedStop * 0.001, 1e-12) : 0;
-    const targetTolerance = expectedTarget > 0 ? Math.max(expectedTarget * 0.001, 1e-12) : 0;
-    const stopOk = expectedStop <= 0 || (stop > 0 && Math.abs(stop - expectedStop) <= stopTolerance);
-    const targetOk = expectedTarget <= 0 || (target > 0 && Math.abs(target - expectedTarget) <= targetTolerance);
-    return { protected: stopOk && targetOk, stopOk, targetOk, position, actualStopLoss: stop, actualTakeProfit: target };
-  }
-
   async closePosition(symbol, size, side) {
     if (this.mode === 'ro') {
       return { error: 'READ-ONLY mode - cannot close positions' };
@@ -908,7 +805,7 @@ class BybitClient {
         side === 'long' ? 'sell' : 'buy',
         size,
         undefined,
-        { reduceOnly: true, positionIdx: this.getPositionIdx(side) }
+        { reduceOnly: true }
       );
       return order;
     } catch (error) {
@@ -1007,10 +904,6 @@ class BybitClient {
       const notional = referencePrice > 0 ? preciseAmount * referencePrice : 0;
       if (rules.minCost > 0 && notional > 0 && notional + Number.EPSILON < rules.minCost) {
         return { error: `${marketSymbol} notional $${notional.toFixed(2)} is below Bybit's live minimum $${rules.minCost.toFixed(2)}` };
-      }
-
-      if (this.marketType === 'swap' && normalizedParams.positionIdx === undefined) {
-        normalizedParams.positionIdx = this.getPositionIdx(normalizedSide);
       }
 
       const order = await this.exchange.createOrder(

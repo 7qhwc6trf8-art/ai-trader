@@ -1,58 +1,76 @@
 'use strict';
 
-const { config, finite, bool } = require('./core/config');
+function finite(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
 
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function truthy(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return !['0', 'false', 'off', 'no', 'disabled'].includes(String(value).toLowerCase());
+}
 
 class MoneyManager {
   constructor() {
-    this.allowedLeverages = [...config.risk.allowedLeverages];
-    this.maxConfiguredLeverage = config.risk.maxLeverage;
-    this.requireAIApproval = bool(process.env.REQUIRE_AI_LEVERAGE_APPROVAL, true);
-    this.allowDowngrade = bool(process.env.ALLOW_AI_LEVERAGE_DOWNGRADE, true);
-    this.baseRiskFraction = config.risk.riskPerTradePct / 100;
-    this.maxRiskFraction = config.risk.maxRiskPerTradePct / 100;
-    this.maxMarginFraction = config.risk.maxMarginPerTradePct / 100;
-    this.feeRate = config.costs.takerFeeRate;
+    this.allowedLeverages = this.parseLeverageOptions(process.env.AI_LEVERAGE_OPTIONS || '1,2,3,5');
+    this.maxConfiguredLeverage = clamp(
+      Math.floor(finite(process.env.MAX_AI_LEVERAGE, Math.max(...this.allowedLeverages))),
+      1,
+      5
+    );
+    this.allowedLeverages = this.allowedLeverages.filter(value => value <= this.maxConfiguredLeverage);
+    if (this.allowedLeverages.length === 0) this.allowedLeverages = [1];
+
+    this.requireAIApproval = truthy(process.env.REQUIRE_AI_LEVERAGE_APPROVAL, true);
+    this.allowDowngrade = truthy(process.env.ALLOW_AI_LEVERAGE_DOWNGRADE, true);
+    this.allowJudgeResolution = truthy(process.env.ALLOW_JUDGE_RESOLUTION, true);
+    this.maxWideStopPct = clamp(finite(process.env.MAX_WIDE_STOP_DISTANCE_PCT, 10), 6, 12);
+
+    this.baseRiskFraction = clamp(finite(process.env.RISK_PER_TRADE_PCT, 0.6) / 100, 0.001, 0.05);
+    this.maxRiskFraction = clamp(finite(process.env.MAX_RISK_PER_TRADE_PCT, 0.8) / 100, this.baseRiskFraction, 0.05);
+    this.maxMarginFraction = clamp(finite(process.env.MAX_MARGIN_PER_TRADE_PCT, 15) / 100, 0.01, 0.95);
+    this.feeRate = clamp(finite(process.env.TRADING_FEE_RATE, 0.001), 0, 0.01);
 
     this.tiers = {
-      1: this.makeTier(1, 58, 1.35, 1, 12, 0.20, 6.0),
-      2: this.makeTier(2, 66, 1.45, 1, 18, 0.25, 5.0),
-      3: this.makeTier(3, 73, 1.60, 2, 24, 0.30, 4.0),
-      5: this.makeTier(5, 82, 1.85, 3, 32, 0.35, 3.0)
+      1: { minConfidence: 55, minRiskReward: 1.20, minAlignedTimeframes: 1, minTpProbability: 15, minStopDistancePct: 0.25, maxStopDistancePct: this.maxWideStopPct },
+      2: { minConfidence: 62, minRiskReward: 1.35, minAlignedTimeframes: 1, minTpProbability: 20, minStopDistancePct: 0.25, maxStopDistancePct: 4.5 },
+      3: { minConfidence: 70, minRiskReward: 1.50, minAlignedTimeframes: 2, minTpProbability: 25, minStopDistancePct: 0.30, maxStopDistancePct: 4.0 },
+      5: { minConfidence: 80, minRiskReward: 1.80, minAlignedTimeframes: 2, minTpProbability: 35, minStopDistancePct: 0.35, maxStopDistancePct: 3.0 }
     };
   }
 
-  makeTier(leverage, minScore, minRiskReward, minAlignedTimeframes, minTpProbability, minStopDistancePct, maxStopDistancePct) {
-    return {
-      leverage,
-      minScore: finite(process.env[`MIN_${leverage}X_EXECUTION_SCORE`], minScore),
-      minRiskReward: finite(process.env[`MIN_${leverage}X_RISK_REWARD`], minRiskReward),
-      minAlignedTimeframes: Math.max(0, Math.trunc(finite(process.env[`MIN_${leverage}X_ALIGNED_TIMEFRAMES`], minAlignedTimeframes))),
-      minTpProbability: finite(process.env[`MIN_${leverage}X_TP_PROBABILITY_PCT`], minTpProbability),
-      minStopDistancePct: finite(process.env[`MIN_${leverage}X_STOP_DISTANCE_PCT`], minStopDistancePct),
-      maxStopDistancePct: finite(process.env[`MAX_${leverage}X_STOP_DISTANCE_PCT`], maxStopDistancePct)
-    };
-  }
-
-  parseLeverageOptions() {
-    return [...this.allowedLeverages];
+  parseLeverageOptions(value) {
+    const parsed = String(value || '')
+      .split(',')
+      .map(item => Math.floor(Number(item.trim())))
+      .filter(item => Number.isFinite(item) && item >= 1 && item <= 5);
+    return [...new Set(parsed.length ? parsed : [1, 2, 3, 5])].sort((a, b) => a - b);
   }
 
   normalizeLeverage(value, fallback = 1) {
     const numeric = Math.floor(finite(value, fallback));
-    if (this.allowedLeverages.includes(numeric)) return numeric;
-    const below = this.allowedLeverages.filter(option => option <= numeric);
-    return below.length ? below.at(-1) : this.allowedLeverages[0];
+    const options = this.allowedLeverages;
+    if (options.includes(numeric)) return numeric;
+    const below = options.filter(option => option <= numeric);
+    return below.length ? below[below.length - 1] : options[0];
   }
 
   inferAILeverage(aiAnalysis = {}) {
-    const explicit = finite(aiAnalysis.recommendedLeverage ?? aiAnalysis.approvedLeverage ?? aiAnalysis.leverage, 0);
+    const explicit = finite(
+      aiAnalysis.recommendedLeverage ?? aiAnalysis.approvedLeverage ?? aiAnalysis.leverage,
+      0
+    );
     if (explicit > 0) return this.normalizeLeverage(explicit);
-    const score = finite(aiAnalysis.executionScore ?? aiAnalysis.calibratedScore ?? aiAnalysis.confidence);
-    if (score >= 84 && this.allowedLeverages.includes(5)) return 5;
-    if (score >= 76 && this.allowedLeverages.includes(3)) return 3;
-    if (score >= 68 && this.allowedLeverages.includes(2)) return 2;
+
+    const confidence = finite(aiAnalysis.confidence);
+    // Never infer extreme leverage from an LLM confidence score.
+    if (confidence >= 85 && this.allowedLeverages.includes(5)) return 5;
+    if (confidence >= 75 && this.allowedLeverages.includes(3)) return 3;
+    if (confidence >= 65 && this.allowedLeverages.includes(2)) return 2;
     return this.allowedLeverages[0];
   }
 
@@ -62,43 +80,75 @@ class MoneyManager {
   }
 
   tierFor(leverage) {
-    return this.tiers[this.normalizeLeverage(leverage)] || this.tiers[1];
+    const normalized = this.normalizeLeverage(leverage, 1);
+    return this.tiers[normalized] || this.tiers[1];
   }
 
   evaluateTier(leverage, metrics) {
     const tier = this.tierFor(leverage);
     const reasons = [];
-    if (metrics.executionScore < tier.minScore) reasons.push(`execution score ${metrics.executionScore.toFixed(1)} < ${tier.minScore}`);
-    if (metrics.riskReward < tier.minRiskReward) reasons.push(`risk/reward ${metrics.riskReward.toFixed(2)} < ${tier.minRiskReward.toFixed(2)}`);
-    if (!Number.isFinite(metrics.stopDistancePct) || metrics.stopDistancePct < tier.minStopDistancePct) reasons.push(`stop distance below ${tier.minStopDistancePct.toFixed(2)}%`);
-    if (metrics.stopDistancePct > tier.maxStopDistancePct) reasons.push(`stop distance ${metrics.stopDistancePct.toFixed(2)}% > ${tier.maxStopDistancePct.toFixed(2)}%`);
-    if (metrics.alignedTimeframes < tier.minAlignedTimeframes) reasons.push(`only ${metrics.alignedTimeframes} aligned timeframe(s); ${tier.minAlignedTimeframes} required`);
-    if (metrics.tpProbability < tier.minTpProbability) reasons.push(`TP probability ${metrics.tpProbability.toFixed(1)}% < ${tier.minTpProbability.toFixed(1)}%`);
-    if (metrics.forecastConflicts && leverage >= 3) reasons.push(`forecast conflicts with ${metrics.action}`);
-    if (config.ai.requireCompleteEnsemble && !metrics.completeEnsemble) reasons.push('complete Claude + DeepSeek ensemble is required');
-    if (config.ai.requireDirectionAgreement && !metrics.ensembleAgreement) reasons.push('Claude and DeepSeek direction agreement is required');
-    if (metrics.volatilityLevel === 'HIGH' && leverage >= 5) reasons.push('5x is disabled in HIGH volatility');
-    if (metrics.liquidity === 'LOW' && leverage >= 3) reasons.push(`${leverage}x is disabled in LOW liquidity`);
+
+    if (metrics.confidence < tier.minConfidence) {
+      reasons.push(`confidence ${metrics.confidence.toFixed(0)}% < ${tier.minConfidence}%`);
+    }
+    if (metrics.riskReward < tier.minRiskReward) {
+      reasons.push(`risk/reward ${metrics.riskReward.toFixed(2)} < ${tier.minRiskReward.toFixed(2)}`);
+    }
+    if (!Number.isFinite(metrics.stopDistancePct) || metrics.stopDistancePct < tier.minStopDistancePct) {
+      reasons.push(`stop distance below ${tier.minStopDistancePct.toFixed(2)}%`);
+    }
+    if (metrics.stopDistancePct > tier.maxStopDistancePct) {
+      reasons.push(`stop distance ${metrics.stopDistancePct.toFixed(2)}% > ${tier.maxStopDistancePct.toFixed(2)}%`);
+    }
+    if (metrics.alignedTimeframes < tier.minAlignedTimeframes) {
+      reasons.push(`only ${metrics.alignedTimeframes} aligned timeframe(s); ${tier.minAlignedTimeframes} required`);
+    }
+    if (metrics.tpProbability < tier.minTpProbability) {
+      reasons.push(`TP probability ${metrics.tpProbability.toFixed(1)}% < ${tier.minTpProbability.toFixed(1)}%`);
+    }
+    if (metrics.forecastConflicts && leverage >= 5) {
+      reasons.push(`rough forecast conflicts with ${metrics.action}`);
+    }
+    // Provider disagreement is resolved by the final judge before this layer.
+    // The money manager only downgrades risk; it never creates a duplicate
+    // 'direction agreement required' rejection.
+    if (metrics.ensembleDisagrees && leverage > 1) {
+      reasons.push('provider disagreement limits leverage to 1x');
+    }
+
     return { passed: reasons.length === 0, reasons, tier };
   }
 
   evaluateLeverage(aiAnalysis, context = {}) {
-    const action = String(context.action || aiAnalysis.action || '').toUpperCase();
-    if (!['BUY', 'SELL'].includes(action)) return { approved: false, leverage: 0, requestedLeverage: 0, reason: 'No leverage for HOLD.' };
-
-    const requestedLeverage = this.inferAILeverage(aiAnalysis);
-    const explicitApproval = aiAnalysis.approveLeverage === true ||
-      String(aiAnalysis.leverageApproval || '').toUpperCase() === 'APPROVED' ||
-      finite(aiAnalysis.recommendedLeverage ?? aiAnalysis.approvedLeverage) > 0;
-    if (this.requireAIApproval && !explicitApproval) {
-      return { approved: false, leverage: 0, requestedLeverage, explicitAIApproval: false, reason: 'Final AI did not approve an allowed leverage tier.' };
+    const action = String(context.action || aiAnalysis?.action || '').toUpperCase();
+    if (!['BUY', 'SELL'].includes(action)) {
+      return { approved: false, leverage: 0, requestedLeverage: 0, reason: 'No leverage for HOLD.' };
     }
 
-    const entry = finite(context.entryPrice ?? aiAnalysis.entryPrice);
-    const stop = finite(context.stopLoss ?? aiAnalysis.stopLoss);
-    const executionScore = finite(context.executionScore ?? aiAnalysis.executionScore ?? aiAnalysis.calibratedScore ?? aiAnalysis.confidence);
-    const riskReward = finite(context.riskReward ?? aiAnalysis.riskReward);
-    const stopDistancePct = entry > 0 ? Math.abs(entry - stop) / entry * 100 : Infinity;
+    const requestedLeverage = this.inferAILeverage(aiAnalysis);
+    const approvalText = String(aiAnalysis?.leverageApproval || '').toUpperCase();
+    const explicitRejection = aiAnalysis?.approveLeverage === false || approvalText === 'REJECTED';
+    const explicitApproval = !explicitRejection && (
+      aiAnalysis?.approveLeverage === true ||
+      aiAnalysis?.approve10x === true ||
+      approvalText === 'APPROVED'
+    );
+
+    if (this.requireAIApproval && !explicitApproval) {
+      return {
+        approved: false,
+        leverage: 0,
+        requestedLeverage,
+        explicitAIApproval: false,
+        reason: 'Final AI did not approve any leverage tier.'
+      };
+    }
+
+    const confidence = finite(context.executionScore ?? aiAnalysis?.executionScore ?? aiAnalysis?.calibratedScore ?? aiAnalysis?.confidence);
+    const riskReward = finite(context.riskReward ?? aiAnalysis?.riskReward);
+    const entry = finite(context.entryPrice ?? aiAnalysis?.entryPrice);
+    const stop = finite(context.stopLoss ?? aiAnalysis?.stopLoss);
+    const stopDistancePct = entry > 0 ? (Math.abs(entry - stop) / entry) * 100 : Infinity;
     const alignedTimeframes = this.countAlignedTimeframes(action, context.multiTF);
     const tpProbability = finite(context.tpProbability);
     const forecastDirection = String(context.forecastDirection || 'NEUTRAL').toUpperCase();
@@ -106,65 +156,142 @@ class MoneyManager {
     const forecastConflicts = forecastDirection !== 'NEUTRAL' && forecastDirection !== expectedForecastDirection;
     const volatilityLevel = String(context.volatilityLevel || 'MEDIUM').toUpperCase();
     const liquidity = String(context.liquidity || 'MEDIUM').toUpperCase();
-    const ensemble = aiAnalysis.ensemble;
+
+    const ensemble = aiAnalysis?.ensemble;
     const claudeAction = String(ensemble?.claude?.action || '').toUpperCase();
     const deepseekAction = String(ensemble?.deepseek?.action || '').toUpperCase();
-    const completeEnsemble = Boolean(claudeAction && deepseekAction && !ensemble?.claude?.error && !ensemble?.deepseek?.error);
+    const completeEnsemble = Boolean(claudeAction && deepseekAction);
     const ensembleAgreement = completeEnsemble && claudeAction === action && deepseekAction === action;
-    const exchangeMax = clamp(Math.floor(finite(context.marketMaxLeverage, config.risk.maxLeverage)), 1, config.risk.maxLeverage);
+    const ensembleDisagrees = completeEnsemble && !ensembleAgreement;
 
-    const candidates = this.allowedLeverages
-      .filter(value => value <= requestedLeverage && value <= exchangeMax)
+    const exchangeMax = clamp(
+      Math.floor(finite(context.marketMaxLeverage, finite(process.env.BYBIT_FALLBACK_MAX_LEVERAGE, 5))),
+      1,
+      100
+    );
+
+    // Wide stops are not automatically rejected. They force lower leverage
+    // and therefore a smaller risk-sized position. Stops above the hard cap
+    // remain blocked because liquidation/fee sensitivity becomes excessive.
+    let stopBasedMaxLeverage = 0;
+    if (stopDistancePct <= 3.0) stopBasedMaxLeverage = 5;
+    else if (stopDistancePct <= 4.5) stopBasedMaxLeverage = 3;
+    else if (stopDistancePct <= 6.0) stopBasedMaxLeverage = 2;
+    else if (stopDistancePct <= this.maxWideStopPct) stopBasedMaxLeverage = 1;
+
+    if (stopBasedMaxLeverage === 0) {
+      return {
+        approved: false,
+        leverage: 0,
+        requestedLeverage,
+        exchangeMaxLeverage: exchangeMax,
+        confidence,
+        riskReward,
+        stopDistancePct,
+        alignedTimeframes,
+        tpProbability,
+        forecastDirection,
+        ensembleAgreement,
+        attempts: [],
+        reason: `Stop distance ${stopDistancePct.toFixed(2)}% exceeds the hard ${this.maxWideStopPct.toFixed(2)}% safety cap.`
+      };
+    }
+
+    const agreementMaxLeverage = ensembleDisagrees ? 1 : 5;
+    const configuredCandidates = this.allowedLeverages
+      .filter(value => value <= requestedLeverage && value <= exchangeMax && value <= stopBasedMaxLeverage && value <= agreementMaxLeverage)
       .sort((a, b) => b - a);
-    const evaluatedCandidates = this.allowDowngrade ? candidates : candidates.filter(value => value === requestedLeverage);
-    const metrics = { action, executionScore, riskReward, stopDistancePct, alignedTimeframes, tpProbability, forecastConflicts, volatilityLevel, liquidity, completeEnsemble, ensembleAgreement };
-    const attempts = [];
 
-    for (const leverage of evaluatedCandidates) {
-      const result = this.evaluateTier(leverage, metrics);
-      attempts.push({ leverage, ...result });
-      if (result.passed) {
+    const candidates = this.allowDowngrade
+      ? configuredCandidates
+      : configuredCandidates.filter(value => value === requestedLeverage);
+
+    const metrics = {
+      action,
+      confidence,
+      riskReward,
+      stopDistancePct,
+      alignedTimeframes,
+      tpProbability,
+      forecastDirection,
+      forecastConflicts,
+      volatilityLevel,
+      liquidity,
+      completeEnsemble,
+      ensembleAgreement,
+      ensembleDisagrees
+    };
+
+    const attempts = [];
+    for (const leverage of candidates) {
+      const evaluation = this.evaluateTier(leverage, metrics);
+      attempts.push({ leverage, ...evaluation });
+      if (evaluation.passed) {
+        const downgraded = leverage !== requestedLeverage;
         return {
           approved: true,
           leverage,
           requestedLeverage,
-          downgraded: leverage !== requestedLeverage,
+          downgraded,
           exchangeMaxLeverage: exchangeMax,
           explicitAIApproval: explicitApproval,
-          executionScore,
+          confidence,
           riskReward,
           stopDistancePct,
           alignedTimeframes,
           tpProbability,
+          forecastDirection,
           ensembleAgreement,
-          reason: leverage !== requestedLeverage
-            ? `AI requested ${requestedLeverage}x; V16 downgraded it to ${leverage}x.`
-            : (aiAnalysis.leverageReason || `${leverage}x passed the V16 hard gate.`),
+          minimumConfidence: evaluation.tier.minConfidence,
+          reason: downgraded
+            ? `AI requested ${requestedLeverage}x; hard risk gate downgraded to ${leverage}x${stopDistancePct > 6 ? ` because the stop is ${stopDistancePct.toFixed(2)}% wide` : ensembleDisagrees ? ' because providers disagreed and the final judge resolved direction' : ''}.`
+            : (aiAnalysis?.leverageReason || `AI selected ${leverage}x and the hard risk gate approved it.`),
           attempts
         };
       }
     }
 
+    const requestedAboveExchange = requestedLeverage > exchangeMax
+      ? `AI requested ${requestedLeverage}x but Bybit reports a ${exchangeMax}x maximum for this symbol. `
+      : '';
+    const bestAttempt = attempts[0];
+    const detail = bestAttempt?.reasons?.join('; ') || 'no configured leverage tier is supported by this market';
     return {
       approved: false,
       leverage: 0,
       requestedLeverage,
       exchangeMaxLeverage: exchangeMax,
       explicitAIApproval: explicitApproval,
-      executionScore,
+      confidence,
+      riskReward,
+      stopDistancePct,
+      alignedTimeframes,
+      tpProbability,
+      forecastDirection,
+      ensembleAgreement,
       attempts,
-      reason: attempts[0]?.reasons?.join('; ') || 'No allowed leverage tier passed the V16 hard gate.'
+      reason: `${requestedAboveExchange}${detail}`.trim()
     };
   }
 
+  // Backward-compatible alias used by older callers/tests.
+  evaluate10xApproval(aiAnalysis, context = {}) {
+    return this.evaluateLeverage(aiAnalysis, context);
+  }
 
-  dynamicRiskFraction(executionScore, volatilityLevel, consecutiveLosses = 0, leverage = 1) {
-    let multiplier = executionScore >= 88 ? 1 : executionScore >= 80 ? 0.88 : executionScore >= 72 ? 0.72 : 0.55;
-    if (String(volatilityLevel).toUpperCase() === 'HIGH') multiplier *= 0.60;
-    else if (String(volatilityLevel).toUpperCase() === 'MEDIUM') multiplier *= 0.85;
+  dynamicRiskFraction(confidence, volatilityLevel, consecutiveLosses = 0, leverage = 1) {
+    let multiplier = 0.75;
+    if (confidence >= 95) multiplier = 1.0;
+    else if (confidence >= 85) multiplier = 0.9;
+    else if (confidence >= 70) multiplier = 0.82;
+
+    if (String(volatilityLevel).toUpperCase() === 'HIGH') multiplier *= 0.65;
+    if (String(volatilityLevel).toUpperCase() === 'MEDIUM') multiplier *= 0.85;
     if (leverage >= 5) multiplier *= 0.72;
-    else if (leverage >= 3) multiplier *= 0.85;
-    multiplier *= Math.max(0.35, 1 - Math.max(0, consecutiveLosses) * 0.25);
+    else if (leverage >= 3) multiplier *= 0.82;
+    else if (leverage >= 2) multiplier *= 0.90;
+
+    multiplier *= Math.max(0.40, 1 - (Math.max(0, consecutiveLosses) * 0.20));
     return clamp(this.baseRiskFraction * multiplier, 0.0005, this.maxRiskFraction);
   }
 
@@ -172,68 +299,72 @@ class MoneyManager {
     const balance = Math.max(0, finite(params.balance));
     const entryPrice = finite(params.entryPrice);
     const stopLoss = finite(params.stopLoss);
-    const leverage = clamp(Math.floor(finite(params.leverage, 1)), 1, config.risk.maxLeverage);
-    const executionScore = finite(params.executionScore ?? params.confidence);
-    const configuredRiskFraction = this.dynamicRiskFraction(executionScore, params.volatilityLevel, finite(params.consecutiveLosses), leverage);
-    const riskMultiplier = clamp(finite(params.riskMultiplier, 1), 0.05, 1);
-    const riskFraction = clamp(configuredRiskFraction * riskMultiplier, 0.0001, this.maxRiskFraction);
-    const requestedRiskAmount = balance * riskFraction;
+    const leverage = clamp(Math.floor(finite(params.leverage, 1)), 1, 5);
+    const riskFraction = this.dynamicRiskFraction(
+      finite(params.confidence),
+      params.volatilityLevel,
+      finite(params.consecutiveLosses),
+      leverage
+    );
+    const riskAmount = balance * riskFraction;
     const riskPerUnit = Math.abs(entryPrice - stopLoss);
     const marketRules = params.marketRules || {};
-    const minimumOrderAmount = Math.max(0, finite(marketRules.minimumOrderAmount, finite(params.minimumOrderAmount)));
+    const liveMinimum = finite(marketRules.minimumOrderAmount, finite(params.minimumOrderAmount));
+    const minimumOrderAmount = liveMinimum > 0 ? liveMinimum : 0.001;
     const amountStep = Math.max(0, finite(marketRules.amountStep));
 
-    if (!(balance > 0 && entryPrice > 0 && riskPerUnit > 0)) {
+    if (balance <= 0 || entryPrice <= 0 || riskPerUnit <= 0) {
       return { executable: false, positionSize: 0, reason: 'Invalid balance, entry price or stop-loss distance.' };
     }
 
-    const roundTripCostRate = config.costs.takerFeeRate * 2 + config.costs.estimatedSlippageRate * 2;
-    const feeAdjustedRisk = requestedRiskAmount / Math.max(1, 1 + roundTripCostRate * entryPrice / riskPerUnit);
-    const rawPositionSize = feeAdjustedRisk / riskPerUnit;
-    const maxByAvailableBalance = balance * leverage * 0.90 / entryPrice;
-    const maxByMarginAllocation = balance * leverage * this.maxMarginFraction / entryPrice;
-    const maxPositionSize = Math.min(maxByAvailableBalance, maxByMarginAllocation);
+    const feeBuffer = Math.max(0.88, 1 - (this.feeRate * 6));
+    const rawPositionSize = (riskAmount / riskPerUnit) * feeBuffer;
+    const maxByBalance = (balance * leverage / entryPrice) * 0.90;
+    const leverageMarginCap = leverage >= 5
+      ? Math.min(this.maxMarginFraction, 0.08)
+      : this.maxMarginFraction;
+    const maxByMarginAllocation = (balance * leverage * leverageMarginCap) / entryPrice;
+    const maxPositionSize = Math.min(maxByBalance, maxByMarginAllocation);
 
-    if (minimumOrderAmount > 0 && maxPositionSize < minimumOrderAmount) {
+    if (maxPositionSize < minimumOrderAmount) {
+      const minimumNotional = minimumOrderAmount * entryPrice;
       return {
         executable: false,
         positionSize: 0,
-        requestedRiskAmount,
-        reason: `Bybit minimum order exceeds the configured ${config.risk.maxMarginPerTradePct}% margin cap.`
+        riskAmount,
+        riskFraction,
+        reason: `Minimum order needs about $${(minimumNotional / leverage).toFixed(2)} margin at ${leverage}x, above the configured per-trade margin cap.`
       };
     }
 
-    let positionSize = Math.min(rawPositionSize, maxPositionSize);
-    if (amountStep > 0) positionSize = Math.floor((positionSize / amountStep) + 1e-12) * amountStep;
-    if (minimumOrderAmount > 0 && positionSize < minimumOrderAmount) positionSize = minimumOrderAmount;
-    if (!(positionSize > 0) || positionSize > maxPositionSize + Number.EPSILON) {
-      return { executable: false, positionSize: 0, reason: 'Calculated size is not executable inside the margin cap.' };
+    let positionSize = Math.min(Math.max(rawPositionSize, minimumOrderAmount), maxPositionSize);
+    if (amountStep > 0) {
+      positionSize = Math.floor((positionSize / amountStep) + 1e-12) * amountStep;
     }
+    if (positionSize < minimumOrderAmount) positionSize = minimumOrderAmount;
 
     const notional = positionSize * entryPrice;
     const marginUsed = notional / leverage;
     const stopLossAmount = positionSize * riskPerUnit;
-    const estimatedRoundTripCosts = notional * roundTripCostRate;
 
     return {
-      executable: true,
+      executable: Number.isFinite(positionSize) && positionSize > 0,
       positionSize,
       rawPositionSize,
       maximumPositionSize: maxPositionSize,
       riskFraction,
-      riskPercent: balance > 0 ? stopLossAmount / balance * 100 : 0,
-      riskAmount: stopLossAmount,
-      requestedRiskAmount,
+      riskPercent: riskFraction * 100,
+      riskAmount,
       stopLossAmount,
       notional,
       marginUsed,
-      marginPercent: balance > 0 ? marginUsed / balance * 100 : 0,
-      estimatedRoundTripCosts,
+      marginPercent: balance > 0 ? (marginUsed / balance) * 100 : 0,
       leverage,
       minimumOrderAmount,
-      reason: 'V16 stop-based sizing with fee, slippage, leverage and margin caps.'
+      reason: 'Position sized from stop-loss risk and capped by leverage-aware margin limits.'
     };
   }
 }
 
 module.exports = new MoneyManager();
+

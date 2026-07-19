@@ -1,226 +1,64 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const logger = require('./logger');
-const { sameCoin, normalizeCoin } = require('./symbol_utils');
-const { config, finite } = require('./core/config');
+const { sameCoin } = require('./symbol_utils');
 
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const finite = (v, f = 0) => Number.isFinite(Number(v)) ? Number(v) : f;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 class RiskManager {
-  constructor() {
-    this.file = process.env.RISK_STATE_FILE || path.join(config.app.dataDir, 'risk_state.json');
-    this.state = this.load();
-    this.ensureCurrentDay();
+  constructor(config = {}) {
+    this.riskPerTrade = clamp(finite(process.env.RISK_PER_TRADE_PCT, 0.35) / 100, 0.0005, 0.02);
+    this.maxRiskPerTrade = clamp(finite(process.env.MAX_RISK_PER_TRADE_PCT, 0.50) / 100, this.riskPerTrade, 0.03);
+    this.maxPositions = clamp(Math.floor(finite(process.env.MAX_OPEN_POSITIONS, 2)), 1, 10);
+    this.maxTradesPerDay = clamp(Math.floor(finite(process.env.MAX_TRADES_PER_DAY, 4)), 1, 50);
+    this.maxDailyLossPct = clamp(finite(process.env.MAX_DAILY_LOSS_PCT, 2), 0.25, 20);
+    this.maxConsecutiveLosses = clamp(Math.floor(finite(process.env.MAX_CONSECUTIVE_LOSSES, 2)), 1, 10);
+    this.minRiskReward = clamp(finite(process.env.MIN_RISK_REWARD, 1.5), 0.5, 10);
+    this.minExecutionScore = clamp(finite(process.env.MIN_EXECUTION_SCORE, 68), 0, 100);
+    this.resetDaily();
   }
 
-  dateKey(timestamp = Date.now()) {
-    const parts = Object.fromEntries(
-      new Intl.DateTimeFormat('en-US', {
-        timeZone: config.app.timezone,
-        year: 'numeric', month: '2-digit', day: '2-digit'
-      }).formatToParts(new Date(timestamp))
-        .filter(part => part.type !== 'literal')
-        .map(part => [part.type, part.value])
-    );
-    return `${parts.year}-${parts.month}-${parts.day}`;
+  dateKey() { return new Intl.DateTimeFormat('en-CA', { timeZone: process.env.DAILY_TARGET_TIMEZONE || 'Asia/Yerevan' }).format(new Date()); }
+  resetDailyIfNeeded() { if (this.lastResetDate !== this.dateKey()) this.resetDaily(); }
+  resetDaily() {
+    this.dailyNetPnl = 0;
+    this.tradesToday = 0;
+    this.consecutiveLosses = 0;
+    this.lastResetDate = this.dateKey();
   }
 
-  weekKey(timestamp = Date.now()) {
-    // Compute ISO week from the calendar date in the configured trading
-    // timezone, not from the server's UTC date. This keeps daily and weekly
-    // circuit breakers on the same local calendar around midnight.
-    const [year, month, dayOfMonth] = this.dateKey(timestamp).split('-').map(Number);
-    const utc = new Date(Date.UTC(year, month - 1, dayOfMonth));
-    const day = utc.getUTCDay() || 7;
-    utc.setUTCDate(utc.getUTCDate() + 4 - day);
-    const isoYear = utc.getUTCFullYear();
-    const yearStart = new Date(Date.UTC(isoYear, 0, 1));
-    const week = Math.ceil((((utc - yearStart) / 86400000) + 1) / 7);
-    return `${isoYear}-W${String(week).padStart(2, '0')}`;
+  validate(signal, portfolio = {}, account = {}) {
+    this.resetDailyIfNeeded();
+    const checks = [];
+    const positions = Array.isArray(portfolio?.positions) ? portfolio.positions : [];
+    const equity = finite(account.equity ?? portfolio.totalValue ?? portfolio.equity);
+    const lossBaseEquity = finite(account.openingEquity, equity);
+    const executionScore = finite(signal.executionScore ?? signal.calibratedScore ?? signal.confidence);
+    const rr = finite(signal.riskReward);
+
+    if (executionScore < this.minExecutionScore) checks.push(`Execution score ${executionScore.toFixed(1)} < ${this.minExecutionScore}`);
+    if (rr < this.minRiskReward) checks.push(`Risk/reward ${rr.toFixed(2)} < ${this.minRiskReward.toFixed(2)}`);
+    if (positions.length >= this.maxPositions) checks.push(`Max positions ${this.maxPositions} reached`);
+    if (this.tradesToday >= this.maxTradesPerDay) checks.push(`Max trades/day ${this.maxTradesPerDay} reached`);
+    if (this.consecutiveLosses >= this.maxConsecutiveLosses) checks.push(`${this.consecutiveLosses} consecutive losses: daily circuit breaker active`);
+    if (lossBaseEquity > 0 && this.dailyNetPnl <= -(lossBaseEquity * this.maxDailyLossPct / 100)) checks.push(`Daily loss limit ${this.maxDailyLossPct}% reached`);
+    if (positions.some(p => sameCoin(p.symbol || p.coin, signal.coin || signal.symbol))) checks.push(`Position already exists for ${signal.coin || signal.symbol}`);
+
+    return { passed: checks.length === 0, checks };
   }
 
-  emptyState() {
-    return {
-      version: 2,
-      dayKey: this.dateKey(),
-      weekKey: this.weekKey(),
-      dayStartEquity: 0,
-      weekStartEquity: 0,
-      weekPeakEquity: 0,
-      dailyNetPnl: 0,
-      dailyGrossProfit: 0,
-      dailyGrossLoss: 0,
-      tradesOpenedToday: 0,
-      closedTradesToday: 0,
-      consecutiveLosses: 0,
-      processedClosedTradeIds: {},
-      lastTradeTimeByCoin: {},
-      lastUpdatedAt: null
-    };
-  }
-
-  load() {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      return {
-        ...this.emptyState(),
-        ...parsed,
-        processedClosedTradeIds: parsed.processedClosedTradeIds || {},
-        lastTradeTimeByCoin: parsed.lastTradeTimeByCoin || {}
-      };
-    } catch (_) {
-      return this.emptyState();
-    }
-  }
-
-  save() {
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    this.state.lastUpdatedAt = new Date().toISOString();
-    const temporary = `${this.file}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(this.state, null, 2));
-    fs.renameSync(temporary, this.file);
-  }
-
-  ensureCurrentDay(equity = 0) {
-    const today = this.dateKey();
-    const week = this.weekKey();
-    let changed = false;
-
-    if (this.state.weekKey !== week) {
-      this.state.weekKey = week;
-      this.state.weekStartEquity = Math.max(0, finite(equity));
-      this.state.weekPeakEquity = Math.max(0, finite(equity));
-      changed = true;
-    }
-
-    if (this.state.dayKey !== today) {
-      this.state.dayKey = today;
-      this.state.dayStartEquity = Math.max(0, finite(equity));
-      this.state.dailyNetPnl = 0;
-      this.state.dailyGrossProfit = 0;
-      this.state.dailyGrossLoss = 0;
-      this.state.tradesOpenedToday = 0;
-      this.state.closedTradesToday = 0;
-      this.state.consecutiveLosses = 0;
-      this.state.processedClosedTradeIds = {};
-      changed = true;
-    }
-
-    if (equity > 0) {
-      if (!(this.state.dayStartEquity > 0)) { this.state.dayStartEquity = equity; changed = true; }
-      if (!(this.state.weekStartEquity > 0)) { this.state.weekStartEquity = equity; changed = true; }
-      if (equity > finite(this.state.weekPeakEquity)) { this.state.weekPeakEquity = equity; changed = true; }
-    }
-
-    if (changed) this.save();
-  }
-
-  setEquity(equity) {
-    const value = Math.max(0, finite(equity));
-    this.ensureCurrentDay(value);
-    if (value > finite(this.state.weekPeakEquity)) {
-      this.state.weekPeakEquity = value;
-      this.save();
-    }
-  }
-
-  recordOpenedTrade(payload = {}) {
-    this.ensureCurrentDay(finite(payload.equity));
-    this.state.tradesOpenedToday += 1;
-    const coin = normalizeCoin(payload.coin);
-    const openedAtMs = Math.max(0, finite(payload.openedAtMs, Date.now()));
-    if (coin) this.state.lastTradeTimeByCoin[coin] = openedAtMs;
-    this.save();
-    logger.action('RISK_TRADE_OPENED', {
-      coin,
-      openedAtMs,
-      tradesOpenedToday: this.state.tradesOpenedToday
-    });
-  }
-
-  getLastTradeTime(coin) {
-    const normalized = normalizeCoin(coin);
-    return normalized ? Math.max(0, finite(this.state.lastTradeTimeByCoin[normalized])) : 0;
-  }
-
-  reconcileClosedRecords(records = [], equity = 0) {
-    this.ensureCurrentDay(equity);
-    const sorted = [...records].sort((a, b) => finite(a.updatedTime || a.createdTime) - finite(b.updatedTime || b.createdTime));
-    let changed = false;
-    const newlyProcessed = [];
-
-    for (const record of sorted) {
-      const tradeId = String(record.tradeId || record.orderId || `${record.symbol || ''}:${record.updatedTime || record.createdTime || ''}:${record.closedPnl || ''}`);
-      if (this.state.processedClosedTradeIds[tradeId]) continue;
-      const pnl = finite(record.closedPnl ?? record.netPnl ?? record.pnl);
-      this.state.dailyNetPnl += pnl;
-      this.state.dailyGrossProfit += Math.max(0, pnl);
-      this.state.dailyGrossLoss += Math.abs(Math.min(0, pnl));
-      this.state.closedTradesToday += 1;
-      this.state.consecutiveLosses = pnl < 0 ? this.state.consecutiveLosses + 1 : 0;
-      this.state.processedClosedTradeIds[tradeId] = new Date().toISOString();
-      newlyProcessed.push({ ...record, tradeId, pnl });
-      changed = true;
-    }
-
-    const ids = Object.keys(this.state.processedClosedTradeIds);
-    if (ids.length > 2000) {
-      ids.sort((a, b) => String(this.state.processedClosedTradeIds[a]).localeCompare(String(this.state.processedClosedTradeIds[b])));
-      for (const id of ids.slice(0, ids.length - 1500)) delete this.state.processedClosedTradeIds[id];
-      changed = true;
-    }
-
-    if (changed) this.save();
-    return newlyProcessed;
-  }
-
-  overwriteDailyFromExchange(snapshot = {}, equity = 0) {
-    this.ensureCurrentDay(equity);
-    if (!snapshot?.available) return;
-    this.state.dailyNetPnl = finite(snapshot.netPnl);
-    this.state.dailyGrossProfit = Math.max(0, finite(snapshot.grossProfit));
-    this.state.dailyGrossLoss = Math.max(0, finite(snapshot.grossLoss));
-    this.state.closedTradesToday = Math.max(this.state.closedTradesToday, Math.trunc(finite(snapshot.recordCount)));
-    this.save();
-  }
-
-  calculatePositionPlan({ balance, entry, stopLoss, leverage = 1, volatilityMultiplier = 1, maxMarginPct = config.risk.maxMarginPerTradePct }) {
-    balance = finite(balance);
-    entry = finite(entry);
-    stopLoss = finite(stopLoss);
-    leverage = clamp(finite(leverage, 1), 1, config.risk.maxLeverage);
+  calculatePositionPlan({ balance, entry, stopLoss, leverage = 1, volatilityMultiplier = 1, maxMarginPct = 8 }) {
+    balance = finite(balance); entry = finite(entry); stopLoss = finite(stopLoss); leverage = clamp(finite(leverage, 1), 1, 5);
     const stopDistance = Math.abs(entry - stopLoss);
-    if (!(balance > 0 && entry > 0 && stopDistance > 0)) {
-      return { executable: false, size: 0, notional: 0, margin: 0, riskAmount: 0, reason: 'Invalid balance, entry or stop distance.' };
-    }
-
-    const riskFraction = clamp(
-      config.risk.riskPerTradePct / 100 * clamp(volatilityMultiplier, 0.35, 1),
-      0.0005,
-      config.risk.maxRiskPerTradePct / 100
-    );
+    if (!(balance > 0 && entry > 0 && stopDistance > 0)) return { size: 0, notional: 0, margin: 0, riskAmount: 0 };
+    const riskFraction = clamp(this.riskPerTrade * clamp(volatilityMultiplier, 0.35, 1), 0.0005, this.maxRiskPerTrade);
     const riskAmount = balance * riskFraction;
     const riskBasedSize = riskAmount / stopDistance;
     const maxMargin = balance * clamp(maxMarginPct / 100, 0.005, 0.25);
     const maxNotional = maxMargin * leverage;
-    const size = Math.max(0, Math.min(riskBasedSize, maxNotional / entry) * 0.995);
-    const actualRisk = size * stopDistance;
-
-    return {
-      executable: size > 0,
-      size,
-      positionSize: size,
-      notional: size * entry,
-      margin: size * entry / leverage,
-      marginUsed: size * entry / leverage,
-      riskAmount: actualRisk,
-      requestedRiskAmount: riskAmount,
-      riskPercent: balance > 0 ? actualRisk / balance * 100 : 0,
-      leverage,
-      reason: 'Stop-based size capped by margin and configured maximum risk.'
-    };
+    const size = Math.min(riskBasedSize, maxNotional / entry) * 0.997;
+    return { size, notional: size * entry, margin: size * entry / leverage, riskAmount, riskPercent: riskFraction * 100 };
   }
 
   calculatePositionSize(balance, entry, stopLoss, leverage = 1) {
@@ -232,88 +70,41 @@ class RiskManager {
     return risk > 0 ? Math.abs(finite(takeProfit) - finite(entry)) / risk : 0;
   }
 
-  checkDailyLoss(_legacyDailyLoss, equity = 0) {
-    this.ensureCurrentDay(equity);
-    const base = finite(this.state.dayStartEquity, equity);
-    if (!(base > 0)) return { passed: true, reason: null };
-
-    const maxNetLoss = base * config.risk.maxDailyNetLossPct / 100;
-    const maxGrossLoss = base * config.risk.maxDailyGrossLossPct / 100;
-    const currentEquity = Math.max(0, finite(equity));
-    const equityDrawdown = currentEquity > 0 ? Math.max(0, base - currentEquity) : 0;
-    if (currentEquity > 0 && equityDrawdown >= maxNetLoss) {
-      return { passed: false, reason: `Intraday equity drawdown reached: $${equityDrawdown.toFixed(2)} / $${maxNetLoss.toFixed(2)}.` };
-    }
-    if (this.state.dailyNetPnl <= -maxNetLoss) {
-      return { passed: false, reason: `Daily net loss limit reached: $${Math.abs(this.state.dailyNetPnl).toFixed(2)} / $${maxNetLoss.toFixed(2)}.` };
-    }
-    if (this.state.dailyGrossLoss >= maxGrossLoss) {
-      return { passed: false, reason: `Daily gross loss limit reached: $${this.state.dailyGrossLoss.toFixed(2)} / $${maxGrossLoss.toFixed(2)}.` };
-    }
-    return { passed: true, reason: null };
-  }
-
-  checkWeeklyDrawdown(equity) {
-    this.setEquity(equity);
-    const peak = finite(this.state.weekPeakEquity);
-    const current = finite(equity);
-    const drawdownPct = peak > 0 ? (peak - current) / peak * 100 : 0;
-    return {
-      passed: drawdownPct < config.risk.maxWeeklyDrawdownPct,
-      drawdownPct,
-      reason: drawdownPct >= config.risk.maxWeeklyDrawdownPct
-        ? `Weekly drawdown ${drawdownPct.toFixed(2)}% reached the ${config.risk.maxWeeklyDrawdownPct}% limit.`
-        : null
-    };
-  }
-
-  validate(signal, portfolio = {}, account = {}) {
-    const equity = finite(account.equity ?? portfolio.totalValue ?? portfolio.equity);
-    this.ensureCurrentDay(equity);
-    const checks = [];
-    const positions = Array.isArray(portfolio.positions) ? portfolio.positions : [];
-    const executionScore = finite(signal.executionScore ?? signal.calibratedScore);
-    const riskReward = finite(signal.riskReward);
-
-    if (executionScore < config.risk.minExecutionScore) checks.push(`Execution score ${executionScore.toFixed(1)} < ${config.risk.minExecutionScore}`);
-    if (riskReward < config.risk.minRiskReward) checks.push(`Risk/reward ${riskReward.toFixed(2)} < ${config.risk.minRiskReward.toFixed(2)}`);
-    if (positions.length >= config.risk.maxOpenPositions) checks.push(`Max positions ${config.risk.maxOpenPositions} reached`);
-    if (this.state.tradesOpenedToday >= config.risk.maxTradesPerDay) checks.push(`Max trades/day ${config.risk.maxTradesPerDay} reached`);
-    if (this.state.consecutiveLosses >= config.risk.maxConsecutiveLosses) checks.push(`${this.state.consecutiveLosses} consecutive losses: circuit breaker active`);
-    if (positions.some(position => sameCoin(position.symbol || position.coin, signal.coin || signal.symbol))) checks.push(`Position already exists for ${signal.coin || signal.symbol}`);
-
-    const daily = this.checkDailyLoss(0, equity);
-    if (!daily.passed) checks.push(daily.reason);
-    const weekly = this.checkWeeklyDrawdown(equity);
-    if (!weekly.passed) checks.push(weekly.reason);
-
-    return { passed: checks.length === 0, checks, state: this.getStatus() };
+  syncDailyState({ netPnl = 0, trades = 0, consecutiveLosses = 0, dateKey = null } = {}) {
+    this.dailyNetPnl = finite(netPnl);
+    this.tradesToday = Math.max(0, Math.trunc(finite(trades)));
+    this.consecutiveLosses = Math.max(0, Math.trunc(finite(consecutiveLosses)));
+    this.lastResetDate = dateKey || this.dateKey();
+    logger.action('RISK_DAILY_SYNC', {
+      dailyNetPnl: this.dailyNetPnl,
+      tradesToday: this.tradesToday,
+      consecutiveLosses: this.consecutiveLosses,
+      dateKey: this.lastResetDate
+    });
   }
 
   updateDailyLoss(pnl) {
-    // Backward-compatible local-close path. Exchange reconciliation remains the
-    // primary source of truth and is idempotent.
-    const synthetic = { orderId: `local-${Date.now()}-${Math.random()}`, closedPnl: finite(pnl), updatedTime: Date.now() };
-    this.reconcileClosedRecords([synthetic]);
+    this.resetDailyIfNeeded();
+    pnl = finite(pnl);
+    this.dailyNetPnl += pnl;
+    this.tradesToday += 1;
+    this.consecutiveLosses = pnl < 0 ? this.consecutiveLosses + 1 : 0;
+    logger.action('RISK_DAILY_UPDATE', { dailyNetPnl: this.dailyNetPnl, tradesToday: this.tradesToday, consecutiveLosses: this.consecutiveLosses });
   }
 
   getStatus() {
-    this.ensureCurrentDay();
+    this.resetDailyIfNeeded();
     return {
-      ...this.state,
-      maxPositions: config.risk.maxOpenPositions,
-      maxTradesPerDay: config.risk.maxTradesPerDay,
-      maxDailyLossPct: config.risk.maxDailyNetLossPct,
-      maxDailyGrossLossPct: config.risk.maxDailyGrossLossPct,
-      riskPerTradePct: config.risk.riskPerTradePct,
-      minExecutionScore: config.risk.minExecutionScore,
-      minRiskReward: config.risk.minRiskReward,
-      maxConsecutiveLosses: config.risk.maxConsecutiveLosses
+      dailyNetPnl: this.dailyNetPnl,
+      tradesToday: this.tradesToday,
+      consecutiveLosses: this.consecutiveLosses,
+      maxPositions: this.maxPositions,
+      maxTradesPerDay: this.maxTradesPerDay,
+      maxDailyLossPct: this.maxDailyLossPct,
+      riskPerTradePct: this.riskPerTrade * 100,
+      minExecutionScore: this.minExecutionScore,
+      minRiskReward: this.minRiskReward
     };
-  }
-
-  get maxPositions() {
-    return config.risk.maxOpenPositions;
   }
 }
 

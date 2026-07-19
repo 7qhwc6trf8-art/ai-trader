@@ -1,7 +1,5 @@
 'use strict';
 
-const { config } = require('./core/config');
-
 function finite(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
@@ -13,9 +11,8 @@ function clamp(value, min, max) {
 
 class MarketScanner {
   constructor() {
-    this.maxAIAnalyses = config.scanner.maxAiAnalyses;
-    this.maxTimeframesPerCoin = config.scanner.maxTimeframesPerCoin;
-    this.minPrescanScore = config.scanner.minPrescanScore;
+    const configured = Number(process.env.MAX_AI_ANALYSES_PER_SWEEP);
+    this.maxAIAnalyses = Number.isInteger(configured) ? clamp(configured, 1, 50) : 12;
   }
 
   score(data, patterns = [], technical = {}) {
@@ -49,9 +46,7 @@ class MarketScanner {
   }
 
   rank(candidates, limit = this.maxAIAnalyses) {
-    const sorted = [...candidates]
-      .filter(candidate => finite(candidate?.scanScore) >= this.minPrescanScore)
-      .sort((a, b) => b.scanScore - a.scanScore);
+    const sorted = [...candidates].sort((a, b) => b.scanScore - a.scanScore);
     const selected = [];
     const perCoin = new Map();
 
@@ -59,7 +54,7 @@ class MarketScanner {
     // budget covers more of the market universe.
     for (const candidate of sorted) {
       const count = perCoin.get(candidate.coin) || 0;
-      if (count >= this.maxTimeframesPerCoin) continue;
+      if (count >= 2) continue;
       selected.push(candidate);
       perCoin.set(candidate.coin, count + 1);
       if (selected.length >= limit) return selected;

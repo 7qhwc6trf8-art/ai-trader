@@ -3,19 +3,6 @@ const { RSI, EMA, MACD, BollingerBands, Stochastic, ATR } = require("technicalin
 const logger = require('./logger');
 const { calculateFibonacci, calculatePivotPoints, calculateVWAP } = require('./technical_tools');
 
-
-function calculateChange24h(candles, currentPrice) {
-    if (!Array.isArray(candles) || candles.length < 2 || !(currentPrice > 0)) return 0;
-    const target = Number(candles[candles.length - 1][0]) - 24 * 60 * 60 * 1000;
-    let reference = candles[0];
-    for (const candle of candles) {
-        if (Number(candle[0]) <= target) reference = candle;
-        else break;
-    }
-    const referencePrice = Number(reference?.[4]);
-    return referencePrice > 0 ? (currentPrice - referencePrice) / referencePrice * 100 : 0;
-}
-
 async function getMarketData(coin, timeframe = "1h", limit = 200) {
     logger.step('MARKET_DATA_FETCH', { coin, timeframe, limit });
 
@@ -75,12 +62,26 @@ async function getMarketData(coin, timeframe = "1h", limit = 200) {
         const pivotPoints = calculatePivotPoints(highs[lastIndex], lows[lastIndex], closes[lastIndex]);
         const fibonacci = calculateFibonacci(highs, lows, closes, 120);
 
+        const candlesPer24h = {
+            '1m': 1440, '5m': 288, '15m': 96, '30m': 48,
+            '1h': 24, '4h': 6, '1d': 1, '1w': 1
+        };
+        const requestedLookback = candlesPer24h[timeframe] || 24;
+        const actualLookback = Math.min(lastIndex, requestedLookback);
+        const comparisonIndex = Math.max(0, lastIndex - actualLookback);
+        const comparisonPrice = closes[comparisonIndex] || price || 1;
+        const change24h = ((price - comparisonPrice) / comparisonPrice * 100) || 0;
+        const timeframeMinutes = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240, '1d': 1440, '1w': 10080 };
+        const changeWindowHours = actualLookback * (timeframeMinutes[timeframe] || 60) / 60;
+
         const result = {
             coin,
             timeframe,
             limit,
             price,
-            change24h: calculateChange24h(candles, closes[lastIndex]),
+            change24h,
+            changeWindowHours,
+            change24hComplete: actualLookback >= requestedLookback,
             volume: volumes[lastIndex],
             volumeSpike,
             rsi,
@@ -132,5 +133,5 @@ async function getMarketData(coin, timeframe = "1h", limit = 200) {
     }
 }
 
-module.exports = { getMarketData, TIMEFRAMES: ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] };
+module.exports = { getMarketData, TIMEFRAMES: ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"] };
 

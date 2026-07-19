@@ -301,7 +301,7 @@ class WebSocketAutoTrader {
   // ==================== EXECUTE TRADE ====================
 
   async executeTrade(coin, signal) {
-    // V13 deliberately does not execute raw ticker/orderbook/candle signals.
+    // V16.1 deliberately does not execute raw ticker/orderbook/candle signals.
     // Those signals have no final ensemble approval and therefore cannot
     // satisfy the dynamic final-AI leverage token required by OrderManager.
     logger.action('WS_SIGNAL_ANALYSIS_ONLY', {
@@ -333,3 +333,4 @@ class WebSocketAutoTrader {
 }
 
 module.exports = new WebSocketAutoTrader();
+

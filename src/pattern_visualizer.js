@@ -1,4 +1,4 @@
-const { createCanvas } = require('./canvas_adapter');
+const { createCanvas } = require('canvas');
 const fs = require('fs');
 const path = require('path');
 const { calculateFibonacci } = require('./technical_tools');

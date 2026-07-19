@@ -1,175 +1,129 @@
-# AI Trader V16 Autonomous Full
+# AI Trader V17 — Full Statistics & Provider Fixes
 
-V16-ը autonomous crypto-futures research, paper-trading և guarded live-execution համակարգ է՝ Claude + DeepSeek ensemble-ով, Bybit/CCXT ինտեգրմամբ, persistent risk state-ով և restart recovery-ով։
+A CommonJS Node.js trading bot for Bybit perpetual futures with Telegram controls, Claude + DeepSeek analysis, strict risk gates, auditable execution, calibrated signals, LONG/SHORT backtesting, and account performance statistics.
 
-**Կարևոր․** օրական 2% կամ 5% շահույթը երաշխավորված չէ։ `2%`-ը soft profit-lock է, իսկ `5%`-ը hard daily pause։ Համակարգը երբեք չի մեծացնում leverage-ը կամ չի բացում թույլ trade միայն թիրախը լրացնելու համար։
+## Important
 
-## Ինչ է ինքնուրույն անում
+The `2%` and `5%` values in `.env.example` are **daily target and stop controls**, not guaranteed returns. The bot must remain allowed to finish a day at 0% or a loss when no valid setup exists. Forcing a minimum profit causes overtrading and leverage escalation.
 
-1. Սկանավորում է coin universe-ը և `15m,1h,4h` փակ candle-ները։
-2. Թույլ candidate-ները հեռացնում է `MIN_PRESCAN_SCORE` շեմով։
-3. Յուրաքանչյուր coin-ից առավելագույնը մեկ finalist է ուղարկում թանկ AI review-ի։
-4. Claude-ը և DeepSeek-ը անկախ տալիս են strict JSON որոշումներ։
-5. Ensemble judge-ը վերահաստատում է BUY/SELL/HOLD-ը։
-6. Execution score-ը միավորում է calibrated history, multi-timeframe context, liquidity, forecast և technical agreement-ը։
-7. Risk engine-ը ստուգում է daily/weekly circuit breaker-ները, exposure-ը, margin-ը և duplicate position-ը։
-8. Position size-ը հաշվարկվում է stop-loss distance-ից՝ fees/slippage-ի գնահատմամբ։
-9. Live order-ից առաջ նորից ստացվում են balance, portfolio և ticker տվյալները։
-10. Order fill-ից հետո Bybit position-level TP/SL-ը դրվում և հաստատվում է։
-11. Եթե protection-ը չի հաստատվում, bot-ը փորձում է փակել դիրքը և կանգնեցնում է նոր execution-ը։
-12. Restart-ից հետո pending orders, positions, cooldown, daily PnL և calibration state-ը վերականգնվում են։
+Start with `BYBIT_MODE=ro`, then paper testing or a very small isolated balance. Do not put the full account into an unverified strategy.
 
-## Պահանջներ
-
-- Node.js `22.5+`։ Production-ի համար նախընտրելի է ընթացիկ LTS տարբերակը։
-- npm
-- Telegram bot token
-- Ձեր Telegram user ID-ն allowlist-ում
-- Claude և/կամ DeepSeek API key
-- Bybit API keys՝ միայն live mode-ի համար
-
-## Տեղադրում
+## Install
 
 ```bash
-npm ci
+npm install
 cp .env.example .env
-npm run doctor
-npm run verify
+npm test
 npm start
 ```
 
-> **Կարևոր.** Օգտագործեք սովորական `npm ci` կամ `npm install`։ `npm ci --omit=optional` մի օգտագործեք, որովհետև `@napi-rs/canvas`-ի platform-specific native binding-ը npm-ում տեղադրվում է optional dependency-ի միջոցով, իսկ chart generator-ը առանց դրա չի մեկնարկի։
-
-Windows PowerShell-ում՝
+On Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
-npm ci
-npm run doctor
-npm run verify
+npm install
+npm test
 npm start
 ```
 
-## Telegram պաշտպանություն
+Fill the Telegram, Bybit, Anthropic, and DeepSeek keys in `.env`. Never commit `.env` or API keys to Git. A `.gitignore` is included for secrets, SQLite files, logs, and the runtime instance lock.
 
-`.env`-ում պարտադիր գրեք միայն թույլատրված user ID-ները։
+## Claude 400 sampling-parameter fix
 
-```env
-AUTHORIZED_TELEGRAM_USER_IDS=8182558373
-CHAT_ID=8182558373
-```
+V17 uses `CLAUDE_API_MODE=direct` by default and sends an exact Claude request without `temperature`, `top_p`, or `top_k`. After replacing the old files, stop every previous Node process and restart the bot; otherwise the running server may continue sending the obsolete payload.
 
-`CHAT_ID`-ի դրական private-chat արժեքը նույնպես ընդունվում է որպես authorized user։ Բացասական group ID-ն երբեք ամբողջ խմբին access չի տալիս։
-
-## Execution modes
-
-### 1. Analysis — անվտանգ default
+Strict ensemble behavior is enabled by default:
 
 ```env
-EXECUTION_MODE=analysis
-AUTO_START_TRADING=false
+REQUIRE_COMPLETE_ENSEMBLE=true
+ALLOW_PARTIAL_ENSEMBLE=false
 ```
 
-AI signal-ները հաշվարկվում են, բայց ոչ paper և ոչ իրական order չի բացվում։
+When Claude or DeepSeek fails, the ensemble returns `HOLD` rather than silently trading from one provider.
 
-### 2. Paper — ամբողջ autonomous rehearsal
+## Account statistics
 
-```env
-EXECUTION_MODE=paper
-PAPER_INITIAL_BALANCE=200
-AUTO_START_TRADING=true
-CHAT_ID=8182558373
+Use `/statistics` or **📈 Account Statistics**.
+
+Telegram buttons:
+
+- Daily Statistics
+- Week Statistics
+- Monthly Statistics
+- Year Statistics
+- Refresh
+
+Daily rows use this format:
+
+```text
+01/01/2026 • +5.00% • +$10.0000 • 3 trades
+02/01/2026 • -2.10% • -$4.2000 • 2 trades
 ```
 
-Paper broker-ը persistent է․ բացում է LONG/SHORT դիրքեր, ստուգում է TP/SL-ը փակ candle-ներով, հաշվարկում fees/funding-ը և calibration-ին փոխանցում փակ trade-երը։
+Weekly statistics unlock after 7 tracked calendar days, monthly after 30 days, and yearly after 365 days. Before that the bot displays exactly how many days remain.
 
-### 3. Live — միայն երկար paper validation-ից հետո
+Statistics are synchronized from Bybit closed-PnL records and stored in SQLite. Percent return is realized closed PnL divided by reconstructed opening equity. Deposits, withdrawals, internal transfers, and manual positions can distort reconstructed historical percentages; the Telegram message shows this limitation.
 
-```env
-EXECUTION_MODE=live
-BYBIT_MODE=rw
-BYBIT_MARKET_TYPE=swap
-BYBIT_API_KEY_RW=...
-BYBIT_API_SECRET_RW=...
-LIVE_TRADING_ACK=I_ACCEPT_REAL_LOSS
-AUTO_START_TRADING=false
-```
-
-Սկզբում `AUTO_START_TRADING=false` պահեք և օգտագործեք փոքր, առանձնացված balance։ Live mode-ը fail-closed է, եթե չկա balance, positions, daily PnL, ticker, AI ensemble կամ verified TP/SL։
-
-## Daily target behavior
-
-Default՝
+## Core safety defaults
 
 ```env
 DAILY_SOFT_TARGET_PCT=2
 DAILY_HARD_TARGET_PCT=5
-SOFT_TARGET_RISK_MULTIPLIER=0.50
-SOFT_TARGET_MAX_LEVERAGE=2
-```
-
-- Մինչև +2%՝ սովորական risk gate-երը։
-- +2%-ից +5%՝ risk budget-ը կիսվում է, leverage-ը սահմանափակվում է առավելագույնը 2x։
-- +5%-ից հետո՝ նոր position չի բացվում մինչև `Asia/Yerevan`-ի հաջորդ օրը։
-- Օրական loss limit-ի կամ weekly drawdown-ի դեպքում՝ նոր position-ները block են լինում։
-- Թիրախները հաշվվում են realized closed PnL-ից։ Բաց դիրքերը կարող են փոխել equity-ն, ուստի intraday equity drawdown-ը նույնպես առանձին gate է։
-
-## Default risk profile
-
-```env
-RISK_PER_TRADE_PCT=0.30
-MAX_RISK_PER_TRADE_PCT=0.50
 MAX_DAILY_LOSS_PCT=2
-MAX_DAILY_GROSS_LOSS_PCT=3
-MAX_WEEKLY_DRAWDOWN_PCT=6
-MAX_CONSECUTIVE_LOSSES=2
-MAX_TRADES_PER_DAY=4
+RISK_PER_TRADE_PCT=0.35
+MAX_RISK_PER_TRADE_PCT=0.50
 MAX_OPEN_POSITIONS=2
-MAX_PORTFOLIO_EXPOSURE_PCT=30
-MAX_SYMBOL_EXPOSURE_PCT=12
-MAX_MARGIN_PER_TRADE_PCT=8
+MAX_TRADES_PER_DAY=4
+MAX_CONSECUTIVE_LOSSES=2
 AI_LEVERAGE_OPTIONS=1,2,3,5
 MAX_AI_LEVERAGE=5
 ```
 
-Leverage-ը position risk չէ․ risk-ը սահմանվում է entry–SL distance-ով և position size-ով։ AI-ն չի կարող hard cap-ից բարձրացնել leverage-ը։
+The hard daily profit target stops new entries after the configured level. It never makes the bot increase leverage to reach the target.
 
-## Profitability validation
+## Verification
 
-Միացրեք live mode միայն այն դեպքում, երբ paper/walk-forward արդյունքները բավարար են, օրինակ՝
+`npm test` runs:
 
-- առնվազն 300–500 փակ trade,
-- net expectancy > 0 fees/funding-ից հետո,
-- profit factor > 1,
-- ընդունելի maximum drawdown,
-- bull/bear/range պայմաններում առանձին դրական կամ հասկանալի արդյունքներ,
-- confidence bucket-ների իրական calibration,
-- որևէ մեկ coin կամ կարճ շրջան ընդհանուր PnL-ի մեծ մասը չի ստեղծում։
+- JavaScript syntax and dependency declaration audit
+- Telegram callback and provider-payload checks
+- statistics aggregation/unlock tests
+- mocked Bybit statistics synchronization
+- LONG/SHORT next-candle backtest tests
+- leverage rejection tests
+- duplicate Bybit order deduplication tests
+- duplicate local bot-instance lock tests
 
-Այս թվերը ապացույցի շեմեր են, ոչ շահույթի երաշխիք։
+A local instance lock prevents a second Node process from starting with the same project and causing Telegram `409 getUpdates` conflicts. It cannot detect a duplicate process running on another server.
 
-## Հիմնական ֆայլեր
+These tests do not replace live Bybit or AI-provider verification with your own API credentials.
 
-- `src/ultimate_ai_trader.js` — AI ensemble և decision pipeline
-- `src/execution_guard.js` — վերջին deterministic preflight
-- `src/risk_manager.js` — persistent circuit breakers
-- `src/money_manager.js` — stop-based sizing և leverage downgrade
-- `src/order_manager.js` — live fill/protection/recovery lifecycle
-- `src/paper_broker.js` — persistent paper execution
-- `src/trade_journal.js` — signal/pending/open/closed audit state
-- `src/signal_calibrator.js` — historical confidence calibration
-- `src/backtest.js` — LONG/SHORT, next-bar, intrabar worst-case engine
-- `src/telegram_auth.js` — Telegram user allowlist
-- `src/startup_diagnostics.js` — startup doctor
+## Files added or substantially rebuilt
 
-## Օգտակար հրամաններ
+- `src/account_statistics.js`
+- `src/execution_guard.js`
+- `src/signal_calibrator.js`
+- `src/trade_journal.js`
+- `src/order_utils.js`
+- `src/backtest.js`
+- `AUDIT_REPORT.md`
+- `V16_CHANGELOG.md`
+
+
+## V17 execution policy
+
+- Missing provider: HOLD before leverage evaluation.
+- Unresolved Claude/DeepSeek disagreement: HOLD.
+- High-confidence final judge resolution: trade may proceed at maximum 1x.
+- 6-10% stop distance: maximum 1x with risk-sized quantity.
+- More than 10% stop distance: blocked.
+
+After replacing an older deployment, delete and recreate the PM2 process so it cannot keep the old source path:
 
 ```bash
-npm run doctor   # config/dependency/path/security diagnostics
-npm run check    # static source checks
-npm test         # isolated runtime tests
-npm run verify   # check + tests
-npm start        # Telegram bot
+pm2 delete ai-trader
+cd /root/ai-trader
+npm install
+pm2 start src/bot.js --name ai-trader --cwd /root/ai-trader --instances 1 --exec-mode fork --update-env
+pm2 save
 ```
-
-Մանրամասները՝ `V16_ARCHITECTURE.md`, `V15_AUDIT.md`, `MIGRATION_V15_TO_V16.md`, `SECURITY.md`, `TEST_REPORT.md`։

@@ -1,12 +1,9 @@
 const bybit = require('./bybit_client');
 const logger = require('./logger');
 const db = require('./database');
-const crypto = require('crypto');
-const { config } = require('./core/config');
-const tradeJournal = require('./trade_journal');
-const { sameCoin } = require('./symbol_utils');
+const { normalizeCoin, sameCoin } = require('./symbol_utils');
 
-const DEFAULT_LEVERAGE = Math.min(config.risk.maxLeverage, Math.max(1, parseInt(process.env.DEFAULT_AI_LEVERAGE, 10) || 1));
+const DEFAULT_LEVERAGE = Math.min(5, Math.max(1, parseInt(process.env.DEFAULT_AI_LEVERAGE, 10) || 1));
 const parsedOrderTimeout = Number(process.env.ORDER_FILL_TIMEOUT_MS);
 const parsedOrderPollInterval = Number(process.env.ORDER_FILL_POLL_MS);
 
@@ -146,200 +143,170 @@ class OrderManager {
   // spot: spot can't open a short at all). stopLoss/takeProfit are attached
   // directly to the entry order, so Bybit enforces them exchange-side even
   // if this bot process crashes or loses connectivity.
-  buildClientOrderId(coin, action, suppliedId = null) {
-    if (suppliedId) return String(suppliedId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 36);
-    const base = String(coin || 'COIN').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
-    const side = action === 'BUY' ? 'B' : 'S';
-    const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
-    return `v16-${base}-${side}-${suffix}`.slice(0, 36);
-  }
-
-  async ensureProtection(coin, action, stopLoss, takeProfit, positionIdx) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= config.bybit.protectionRetries; attempt += 1) {
-      const setResult = await bybit.setTradingStop(coin, {
-        stopLoss,
-        takeProfit,
-        action,
-        positionIdx
-      });
-      if (!setResult.success) lastError = setResult.error;
-      await this.sleep(Math.min(5000, attempt * 750));
-      const verification = await bybit.verifyPositionProtection(coin, {
-        stopLoss,
-        takeProfit,
-        action,
-        positionIdx
-      });
-      if (verification.protected) {
-        tradeJournal.protection({ coin, action, attempt, protected: true, stopLoss, takeProfit, positionIdx });
-        return { success: true, attempt, verification, setResult };
-      }
-      lastError = verification.error || `Protection verification failed (SL=${verification.actualStopLoss || 0}, TP=${verification.actualTakeProfit || 0})`;
-    }
-    tradeJournal.protection({ coin, action, protected: false, stopLoss, takeProfit, positionIdx, error: lastError });
-    return { success: false, error: lastError || 'Could not attach and verify TP/SL.' };
-  }
-
-  // V16 live entry flow: preflight price checks -> idempotent client id -> fill
-  // confirmation -> explicit Bybit position TP/SL -> verification. An
-  // unprotected position is closed immediately by default.
   async openPosition(coin, action, size, stopLoss, takeProfit, leverage = this.leverage, executionApproval = null) {
     const numericSize = Number(size);
     const numericStopLoss = Number(stopLoss);
     const numericTakeProfit = Number(takeProfit);
-    const numericLeverage = Math.min(config.risk.maxLeverage, Math.max(1, Math.floor(Number(leverage) || 1)));
+    const numericLeverage = Math.min(5, Math.max(1, Math.floor(Number(leverage) || 1)));
+    const allowedLeverages = String(process.env.AI_LEVERAGE_OPTIONS || '1,2,3,5')
+      .split(',').map(Number).filter(value => Number.isFinite(value) && value >= 1 && value <= 5);
+    if (!allowedLeverages.includes(numericLeverage)) {
+      return { success: false, error: `Leverage ${numericLeverage}x is not in the configured safe tiers: ${allowedLeverages.join(', ')}x` };
+    }
+
+    // Defense in depth: every leveraged order must carry the exact leverage
+    // token produced by the final AI decision + hard risk gate. This prevents
+    // manual/WebSocket callers from bypassing the dynamic leverage selector.
     const approvedLeverage = Math.floor(Number(executionApproval?.aiApprovedLeverage) || 0);
-
-    if (config.app.executionMode !== 'live') {
-      return { success: false, error: `Order submission disabled in EXECUTION_MODE=${config.app.executionMode}.` };
-    }
     if (executionApproval?.approved !== true || approvedLeverage !== numericLeverage) {
-      return { success: false, error: `${numericLeverage}x execution rejected: missing or mismatched V16 approval token` };
-    }
-    if (!config.risk.allowedLeverages.includes(numericLeverage)) {
-      return { success: false, error: `${numericLeverage}x is not an allowed V16 leverage tier` };
-    }
-    if (!(numericSize > 0 && numericStopLoss > 0 && numericTakeProfit > 0)) {
-      return { success: false, error: 'Size, stop-loss and take-profit must all be positive.' };
+      return {
+        success: false,
+        error: `${numericLeverage}x execution rejected: missing or mismatched final-AI leverage approval token`
+      };
     }
 
-    const normalizedAction = String(action || '').toUpperCase();
-    if (!['BUY', 'SELL'].includes(normalizedAction)) return { success: false, error: `Invalid action: ${action}` };
-    const side = normalizedAction === 'BUY' ? 'buy' : 'sell';
-    const positionSide = normalizedAction === 'BUY' ? 'long' : 'short';
-    const positionIdx = bybit.getPositionIdx(normalizedAction);
-    const clientOrderId = this.buildClientOrderId(coin, normalizedAction, executionApproval?.clientOrderId);
+    if (!Number.isFinite(numericSize) || numericSize <= 0) {
+      return { success: false, error: `Invalid order size: ${size}` };
+    }
+
+    const side = action === 'BUY' ? 'buy' : 'sell';
 
     try {
       const ticker = await bybit.getTicker(coin);
       const currentPrice = Number(ticker?.last ?? ticker?.mark);
-      const bid = Number(ticker?.bid);
-      const ask = Number(ticker?.ask);
-      if (!(currentPrice > 0)) return { success: false, error: `Could not load the current ${coin} price` };
-
-      const expectedEntry = Number(executionApproval?.expectedEntryPrice);
-      const driftPct = expectedEntry > 0 ? Math.abs(currentPrice - expectedEntry) / expectedEntry * 100 : 0;
-      const spreadPct = bid > 0 && ask > 0 ? (ask - bid) / ((ask + bid) / 2) * 100 : 0;
-      if (driftPct > config.bybit.maxEntryDriftPct) {
-        return { success: false, error: `Entry drift ${driftPct.toFixed(3)}% exceeds ${config.bybit.maxEntryDriftPct}%.` };
-      }
-      if (spreadPct > config.bybit.maxSpreadPct) {
-        return { success: false, error: `Spread ${spreadPct.toFixed(3)}% exceeds ${config.bybit.maxSpreadPct}%.` };
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+        return { success: false, error: `Could not load the current ${coin} price` };
       }
 
-      const signalTimestamp = Number(executionApproval?.signalTimestamp || Date.now());
-      const signalAgeMs = Math.max(0, Date.now() - signalTimestamp);
-      if (signalAgeMs > config.bybit.signalMaxAgeMs) {
-        return { success: false, error: `Signal expired before order submission (${Math.round(signalAgeMs / 1000)}s).` };
+      const rules = bybit.getMarketRules
+        ? await bybit.getMarketRules(coin, currentPrice)
+        : null;
+      if (rules?.error) {
+        return { success: false, error: `Could not load Bybit's live ${coin} order limits: ${rules.error}` };
       }
 
-      const rules = await bybit.getMarketRules(coin, currentPrice);
-      if (rules?.error) return { success: false, error: `Could not load Bybit order limits: ${rules.error}` };
       if (rules?.spot === true || String(rules?.marketType || '').toLowerCase() === 'spot') {
-        return { success: false, error: 'V16 long/short execution requires BYBIT_MARKET_TYPE=swap.' };
+        return {
+          success: false,
+          error: 'Leveraged long/short positions require BYBIT_MARKET_TYPE=swap; spot markets do not support this execution path'
+        };
       }
+
       const exchangeMaxLeverage = Number(rules?.maxLeverage);
-      if (exchangeMaxLeverage > 0 && numericLeverage > exchangeMaxLeverage) {
-        return { success: false, error: `Bybit maximum for ${coin} is ${exchangeMaxLeverage}x; selected ${numericLeverage}x.` };
+      if (Number.isFinite(exchangeMaxLeverage) && exchangeMaxLeverage > 0 && numericLeverage > exchangeMaxLeverage) {
+        return {
+          success: false,
+          error: `Bybit allows at most ${exchangeMaxLeverage}x leverage for ${coin}; AI selected ${numericLeverage}x`
+        };
       }
+
       const liveMinimum = Number(rules?.minimumOrderAmount);
-      if (liveMinimum > 0 && numericSize + Number.EPSILON < liveMinimum) {
-        return { success: false, error: `Bybit minimum amount is ${liveMinimum} ${coin}; calculated ${numericSize}.` };
+      if (Number.isFinite(liveMinimum) && liveMinimum > 0 && numericSize + Number.EPSILON < liveMinimum) {
+        const minimumNotional = liveMinimum * currentPrice;
+        const minimumMargin = (minimumNotional / numericLeverage) * 1.1;
+        return {
+          success: false,
+          error: `Bybit requires at least ${liveMinimum} ${coin} (about $${minimumNotional.toFixed(2)} notional / $${minimumMargin.toFixed(2)} margin at ${numericLeverage}x)`
+        };
       }
 
       const balance = await bybit.getBalance();
       const availableMargin = Number(balance?.tradableUSD ?? balance?.availableUSDT ?? 0);
-      const requiredMargin = numericSize * currentPrice / numericLeverage * 1.12;
-      if (!(availableMargin >= requiredMargin)) {
-        return { success: false, error: `Order needs about $${requiredMargin.toFixed(2)} margin; $${Math.max(0, availableMargin || 0).toFixed(2)} available.` };
-      }
-
-      const leverageResult = await bybit.setLeverage(coin, numericLeverage);
-      if (!leverageResult.success && !/not modified|same leverage|110043/i.test(leverageResult.error || '')) {
-        return { success: false, error: `Could not set ${numericLeverage}x leverage: ${leverageResult.error}` };
-      }
-
-      let positionBefore = null;
-      try { positionBefore = await this.getPosition(coin); } catch (_) {}
-
-      const orderParams = {
-        positionIdx,
-        reduceOnly: false,
-        clientOrderId,
-        stopLoss: { triggerPrice: numericStopLoss },
-        takeProfit: { triggerPrice: numericTakeProfit }
-      };
-      const order = await bybit.placeOrder(coin, side, numericSize, undefined, 'market', orderParams);
-      if (!order || order.error) return { success: false, error: order?.error || 'Bybit returned no order' };
-
-      tradeJournal.submitted({
-        signalId: executionApproval?.signalId || null,
-        tradeId: order.id || clientOrderId,
-        orderId: order.id || null,
-        clientOrderId,
-        coin,
-        action: normalizedAction,
-        side: positionSide,
-        size: numericSize,
-        expectedEntryPrice: expectedEntry || currentPrice,
-        stopLoss: numericStopLoss,
-        takeProfit: numericTakeProfit,
-        leverage: numericLeverage,
-        riskAmount: Number(executionApproval?.riskAmount) || 0,
-        positionIdx
-      });
-
-      const filled = this.isOrderFilled(order)
-        ? order
-        : await this.waitForFill(order.id, coin, { initialOrder: order, positionBefore, requestedSize: numericSize });
-      if (!filled) {
+      const requiredMargin = (numericSize * currentPrice / numericLeverage) * 1.1;
+      if (!Number.isFinite(availableMargin) || availableMargin < requiredMargin) {
         return {
           success: false,
-          critical: true,
-          uncertain: true,
-          orderId: order.id || null,
-          clientOrderId,
-          error: `Bybit accepted the order but fill was not confirmed within ${Math.round(this.orderTimeout / 1000)}s. V16 will not retry automatically.`
+          error: `Order needs about $${requiredMargin.toFixed(2)} margin at ${numericLeverage}x; only $${Math.max(0, availableMargin || 0).toFixed(2)} is available`
         };
       }
 
-      const livePosition = await this.getPosition(coin);
+      const leverageResult = await bybit.setLeverage(coin, numericLeverage);
+      if (!leverageResult.success) {
+        const harmlessAlreadySet = /not modified|same leverage|110043/i.test(leverageResult.error || '');
+        if (!harmlessAlreadySet) {
+          return { success: false, error: `Could not set ${numericLeverage}x leverage: ${leverageResult.error}` };
+        }
+      }
+
+      logger.action('LEVERAGE_APPROVAL_AUDIT', {
+        coin,
+        action,
+        leverage: numericLeverage,
+        aiApprovedLeverage: approvedLeverage,
+        approvalSource: executionApproval?.source || 'not-required',
+        approvalReason: executionApproval?.reason || null
+      });
+
+      const orderParams = {
+        positionIdx: 0,
+        reduceOnly: false
+      };
+
+      // Snapshot the current exchange position before submitting. If Bybit's
+      // order-history endpoint lags, a changed live position is a safe second
+      // source of truth that the accepted market order executed.
+      let positionBefore = null;
+      try {
+        positionBefore = await this.getPosition(coin);
+      } catch (error) {
+        // Order confirmation can still use the normal order endpoint.
+      }
+
+      // CCXT's unified attached TP/SL syntax. These are tied to the position
+      // opened by the market order and do not pass a null order price.
+      if (Number.isFinite(numericStopLoss) && numericStopLoss > 0) {
+        orderParams.stopLoss = { triggerPrice: numericStopLoss };
+      }
+      if (Number.isFinite(numericTakeProfit) && numericTakeProfit > 0) {
+        orderParams.takeProfit = { triggerPrice: numericTakeProfit };
+      }
+
+      const order = await bybit.placeOrder(
+        coin,
+        side,
+        numericSize,
+        undefined,
+        'market',
+        orderParams
+      );
+
+      if (!order || order.error) {
+        return { success: false, error: order?.error || 'Bybit returned no order' };
+      }
+
+      const filled = this.isOrderFilled(order)
+        ? order
+        : await this.waitForFill(order.id, coin, {
+          initialOrder: order,
+          positionBefore,
+          requestedSize: numericSize
+        });
+      if (!filled) {
+        const orderLabel = order.id ? ` ${order.id}` : '';
+        return {
+          success: false,
+          uncertain: true,
+          orderId: order.id || null,
+          error: `Bybit accepted order${orderLabel}, but its fill could not be confirmed within ${Math.round(this.orderTimeout / 1000)}s. Check live Positions before retrying; no second order was submitted.`
+        };
+      }
+
       const position = {
         coin,
         side,
         leverage: numericLeverage,
-        entryPrice: Number(livePosition?.entryPrice || filled.average || filled.price || currentPrice),
-        size: Number(livePosition?.size || filled.filled || numericSize),
+        entryPrice: filled.price || filled.average || 0,
+        size: filled.filled || numericSize,
         stopLoss: numericStopLoss,
         takeProfit: numericTakeProfit,
-        positionIdx,
-        orderId: filled.id || order.id || null,
-        clientOrderId,
         timestamp: new Date().toISOString()
       };
 
-      const protection = await this.ensureProtection(coin, normalizedAction, numericStopLoss, numericTakeProfit, positionIdx);
-      if (!protection.success) {
-        let emergencyClose = null;
-        if (config.bybit.closeUnprotectedPosition) {
-          emergencyClose = await bybit.closePosition(coin, position.size, positionSide);
-        }
-        return {
-          success: false,
-          critical: true,
-          order: filled,
-          position,
-          protection,
-          emergencyClose,
-          error: emergencyClose && !emergencyClose.error
-            ? `Position opened but protection failed; V16 immediately closed it. ${protection.error}`
-            : `CRITICAL: position may be open without verified TP/SL. ${protection.error}`
-        };
+      if (db.savePosition) {
+        db.savePosition({ ...position, openedAt: position.timestamp, status: 'OPEN' });
       }
 
-      if (db.savePosition) db.savePosition({ ...position, openedAt: position.timestamp, status: 'OPEN' });
-      return { success: true, order: filled, position, protection, clientOrderId };
+      return { success: true, order: filled, position };
     } catch (error) {
       logger.error('Order placement error:', error);
       return { success: false, error: error.message };
@@ -431,163 +398,39 @@ class OrderManager {
   async verifyOpenPositions() {
     try {
       const exchangePositions = await bybit.getPositions();
-      if (bybit.lastPositionsError) {
-        return {
-          success: false,
-          critical: true,
-          error: `Cannot reconcile positions because Bybit state is unavailable: ${bybit.lastPositionsError}`
-        };
-      }
-
       const dbPositions = db.getOpenPositions ? await db.getOpenPositions() : [];
-      const criticalErrors = [];
-      const recovered = [];
-
       for (const dbPos of dbPositions) {
-        const exchangePosition = exchangePositions.find(item => sameCoin(item.coin || item.symbol, dbPos.coin));
-        if (!exchangePosition) {
+        if (!exchangePositions.some(position => sameCoin(position.coin || position.symbol, dbPos.coin))) {
           logger.action('POSITION_SYNC', { coin: dbPos.coin, status: 'CLOSED' });
-          if (db.closePosition) db.closePosition(dbPos.coin);
-          continue;
-        }
-
-        const actualStop = Number(exchangePosition.stopLoss) || 0;
-        const actualTarget = Number(exchangePosition.takeProfit) || 0;
-        const expectedStop = Number(dbPos.stopLoss) || 0;
-        const expectedTarget = Number(dbPos.takeProfit) || 0;
-        const stopTolerance = expectedStop > 0 ? Math.max(expectedStop * 0.001, 1e-12) : 0;
-        const targetTolerance = expectedTarget > 0 ? Math.max(expectedTarget * 0.001, 1e-12) : 0;
-        const stopMismatch = expectedStop > 0 && (!(actualStop > 0) || Math.abs(actualStop - expectedStop) > stopTolerance);
-        const targetMismatch = expectedTarget > 0 && (!(actualTarget > 0) || Math.abs(actualTarget - expectedTarget) > targetTolerance);
-        if (stopMismatch || targetMismatch || !(actualStop > 0 && actualTarget > 0)) {
-          if (expectedStop > 0 && expectedTarget > 0) {
-            const action = String(exchangePosition.side).toLowerCase() === 'short' ? 'SELL' : 'BUY';
-            const repair = await this.ensureProtection(
-              exchangePosition.coin,
-              action,
-              expectedStop,
-              expectedTarget,
-              exchangePosition.positionIdx
-            );
-            if (!repair.success) {
-              let emergencyClose = null;
-              if (config.bybit.closeUnprotectedPosition) {
-                emergencyClose = await bybit.closePosition(exchangePosition.coin, exchangePosition.size, exchangePosition.side);
-              }
-              criticalErrors.push(
-                emergencyClose && !emergencyClose.error
-                  ? `${exchangePosition.coin}: protection repair failed; position was closed`
-                  : `${exchangePosition.coin}: existing bot position is unprotected (${repair.error})`
-              );
-            } else {
-              recovered.push({ coin: exchangePosition.coin, type: 'PROTECTION_REPAIRED' });
-            }
-          } else {
-            let emergencyClose = null;
-            if (config.bybit.closeUnprotectedPosition) {
-              emergencyClose = await bybit.closePosition(exchangePosition.coin, exchangePosition.size, exchangePosition.side);
-            }
-            criticalErrors.push(
-              emergencyClose && !emergencyClose.error
-                ? `${exchangePosition.coin}: bot position had no TP/SL plan and was closed`
-                : `${exchangePosition.coin}: open position has no verifiable TP/SL plan`
-            );
+          if (db.closePosition) {
+            db.closePosition(dbPos.coin);
           }
         }
       }
 
       for (const exPos of exchangePositions) {
-        const existing = dbPositions.find(item => sameCoin(item.coin, exPos.coin || exPos.symbol));
-        if (existing) continue;
-
-        const pending = tradeJournal.findPendingByCoin(exPos.coin || exPos.symbol);
-        let stopLoss = Number(exPos.stopLoss) || Number(pending?.stopLoss) || 0;
-        let takeProfit = Number(exPos.takeProfit) || Number(pending?.takeProfit) || 0;
-        const action = pending?.action || (String(exPos.side).toLowerCase() === 'short' ? 'SELL' : 'BUY');
-
-        if (pending && (!(Number(exPos.stopLoss) > 0) || !(Number(exPos.takeProfit) > 0))) {
-          const protection = await this.ensureProtection(
-            exPos.coin,
-            action,
-            stopLoss,
-            takeProfit,
-            exPos.positionIdx
-          );
-          if (!protection.success) {
-            let emergencyClose = null;
-            if (config.bybit.closeUnprotectedPosition) {
-              emergencyClose = await bybit.closePosition(exPos.coin, exPos.size, exPos.side);
-            }
-            criticalErrors.push(
-              emergencyClose && !emergencyClose.error
-                ? `${exPos.coin}: recovered late fill but protection failed; position was closed`
-                : `${exPos.coin}: CRITICAL late fill may be unprotected (${protection.error})`
-            );
-            continue;
+        if (!dbPositions.find(p => sameCoin(p.coin, exPos.coin || exPos.symbol))) {
+          logger.action('POSITION_SYNC', { coin: exPos.coin, status: 'NEW_FROM_EXCHANGE' });
+          if (db.savePosition) {
+            db.savePosition({
+              coin: normalizeCoin(exPos.coin || exPos.symbol),
+              side: exPos.side === 'long' ? 'buy' : 'sell',
+              entryPrice: exPos.entryPrice || 0,
+              size: exPos.size,
+              leverage: exPos.leverage,
+              stopLoss: 0,
+              takeProfit: 0,
+              openedAt: new Date().toISOString(),
+              status: 'OPEN'
+            });
           }
-          recovered.push({ coin: exPos.coin, type: 'LATE_FILL_RECOVERED' });
-        }
-
-        if (!(stopLoss > 0 && takeProfit > 0)) {
-          criticalErrors.push(`${exPos.coin}: unmanaged external position has no verified TP/SL; new entries are blocked`);
-        }
-
-        logger.action('POSITION_SYNC', {
-          coin: exPos.coin,
-          status: pending ? 'RECOVERED_PENDING_ORDER' : 'EXTERNAL_FROM_EXCHANGE'
-        });
-        if (db.savePosition) {
-          db.savePosition({
-            coin: exPos.coin,
-            side: exPos.side === 'long' ? 'buy' : 'sell',
-            entryPrice: exPos.entryPrice || 0,
-            size: exPos.size,
-            leverage: exPos.leverage,
-            stopLoss,
-            takeProfit,
-            orderId: pending?.orderId || null,
-            openedAt: pending?.submittedAt || new Date().toISOString(),
-            status: 'OPEN'
-          });
-        }
-        if (pending) {
-          tradeJournal.opened({
-            signalId: pending.signalId,
-            tradeId: pending.tradeId || pending.orderId,
-            orderId: pending.orderId,
-            clientOrderId: pending.clientOrderId,
-            coin: exPos.coin,
-            action,
-            entryPrice: exPos.entryPrice,
-            stopLoss,
-            takeProfit,
-            riskAmount: pending.riskAmount || 0,
-            recovery: true
-          });
         }
       }
 
-      // Expire abandoned intents only after enough time has passed for Bybit
-      // order/position propagation. They remain in the NDJSON audit trail.
-      const now = Date.now();
-      for (const [coin, pending] of Object.entries(tradeJournal.listPending())) {
-        const hasPosition = exchangePositions.some(item => sameCoin(item.coin || item.symbol, coin));
-        const ageMs = now - Date.parse(pending.submittedAt || 0);
-        if (!hasPosition && Number.isFinite(ageMs) && ageMs > 30 * 60 * 1000) {
-          tradeJournal.clearPending(coin);
-        }
-      }
-
-      return {
-        success: criticalErrors.length === 0,
-        critical: criticalErrors.length > 0,
-        error: criticalErrors.join(' | ') || null,
-        exchangePositions,
-        recovered
-      };
+      return { success: true, exchangePositions };
     } catch (error) {
       logger.error('VERIFY_POSITIONS', error);
-      return { success: false, critical: true, error: error.message };
+      return { success: false, error: error.message };
     }
   }
 
@@ -619,7 +462,7 @@ class OrderManager {
 
   async getPosition(coin) {
     const positions = await bybit.getPositions();
-    return positions.find(position => sameCoin(position.coin || position.symbol, coin));
+    return positions.find(p => sameCoin(p.coin || p.symbol, coin));
   }
 
   // Real open positions from the exchange (both `coin` and `symbol` keys are

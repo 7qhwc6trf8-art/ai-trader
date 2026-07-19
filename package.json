@@ -1,32 +1,27 @@
 {
-  "name": "ai-trader-v16-autonomous",
-  "version": "16.0.0",
-  "description": "Fail-closed Bybit AI trading research and execution system with persistent risk controls.",
+  "name": "ai-trader-v17-final-fixed",
+  "version": "17.0.0",
   "private": true,
   "type": "commonjs",
-  "engines": {
-    "node": ">=22.5.0"
-  },
+  "description": "Risk-controlled Bybit AI trading bot with provider-safe ensemble resolution, wide-stop leverage downgrade, and account statistics.",
   "scripts": {
     "start": "node src/bot.js",
     "check": "node scripts/check.js",
-    "test": "node test/run.js",
-    "verify": "npm run check && npm test",
-    "doctor": "node scripts/doctor.js"
+    "test": "node scripts/check.js && node scripts/statistics_self_test.js && node scripts/provider_payload_self_test.js && node scripts/account_statistics_runtime_test.js && node scripts/backtest_self_test.js && node scripts/money_manager_self_test.js && node scripts/order_dedupe_self_test.js && node scripts/process_lock_self_test.js"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.67.0",
-    "@napi-rs/canvas": "^0.1.80",
-    "ccxt": "^4.4.99",
-    "dotenv": "^17.2.3",
-    "node-cache": "^5.1.2",
-    "node-cron": "^4.2.1",
-    "technicalindicators": "^3.1.0",
-    "telegraf": "^4.16.3",
-    "ws": "^8.18.3"
-  },
-  "optionalDependencies": {
-    "canvas": "^3.2.0",
-    "better-sqlite3": "^12.4.1"
+    "@anthropic-ai/sdk": "latest",
+    "better-sqlite3": "latest",
+    "canvas": "latest",
+    "ccxt": "latest",
+    "dotenv": "latest",
+    "node-cache": "latest",
+    "node-cron": "latest",
+    "technicalindicators": "latest",
+    "telegraf": "latest",
+    "ws": "latest"
   }
 }
