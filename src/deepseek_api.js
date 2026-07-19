@@ -71,14 +71,11 @@ class DeepSeekAPI {
       try {
         const payload = await this.request({
           model: this.model,
+          system,
           messages: [
-            { role: 'system', content: system },
             { role: 'user', content: prompt }
           ],
-          temperature: 0.1,
-          max_tokens: attempt === 1 ? 3000 : 1800,
-          response_format: { type: 'json_object' },
-          stream: false
+          max_tokens: attempt === 1 ? 3000 : 1800
         });
         const content = payload?.choices?.[0]?.message?.content;
         if (!content) throw new Error('DeepSeek returned empty final content');
