@@ -115,3 +115,4 @@ class BybitWebSocket extends EventEmitter {
 }
 
 module.exports = BybitWebSocket;
+

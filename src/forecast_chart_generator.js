@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { createCanvas } = require('canvas');
+const { createCanvas } = require('./canvas_adapter');
 const { calculateFibonacci } = require('./technical_tools');
 
 function finite(value, fallback = 0) {
@@ -241,3 +241,4 @@ class ForecastChartGenerator {
 }
 
 module.exports = new ForecastChartGenerator();
+

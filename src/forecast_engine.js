@@ -298,3 +298,4 @@ class ForecastEngine {
 }
 
 module.exports = new ForecastEngine();
+

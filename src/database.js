@@ -1,6 +1,6 @@
 'use strict';
 
-const Database = require('better-sqlite3');
+const { SQLiteDatabase } = require('./sqlite_adapter');
 const path = require('path');
 
 class DatabaseManager {
@@ -9,7 +9,7 @@ class DatabaseManager {
       ? path.resolve(process.env.TRADING_DB_PATH)
       : path.join(__dirname, '../trading.db');
 
-    this.db = new Database(databasePath);
+    this.db = new SQLiteDatabase(databasePath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('busy_timeout = 5000');
@@ -245,7 +245,24 @@ class DatabaseManager {
   }
 
   createIndexes() {
+    // Legacy builds could insert the same exchange close repeatedly because
+    // tradeId was not constrained. Keep the latest row before enforcing
+    // idempotent writes. NULL tradeIds remain allowed for legacy/manual rows.
     this.db.exec(`
+      DELETE FROM trades
+      WHERE tradeId IS NOT NULL
+        AND TRIM(tradeId) != ''
+        AND id NOT IN (
+          SELECT MAX(id)
+          FROM trades
+          WHERE tradeId IS NOT NULL AND TRIM(tradeId) != ''
+          GROUP BY tradeId
+        );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_trade_id_unique
+        ON trades(tradeId)
+        WHERE tradeId IS NOT NULL AND TRIM(tradeId) != '';
+
       CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_coin_unique
         ON positions(coin);
 
@@ -524,3 +541,4 @@ class DatabaseManager {
 }
 
 module.exports = new DatabaseManager();
+

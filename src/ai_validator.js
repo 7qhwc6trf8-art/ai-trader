@@ -1,229 +1,162 @@
 'use strict';
 
-function finite(value, fallback = 0) {
+const { config } = require('./core/config');
+
+const ACTIONS = new Set(['BUY', 'SELL', 'HOLD']);
+const SENTIMENTS = new Set(['BULLISH', 'BEARISH', 'NEUTRAL']);
+const CONDITIONS = new Set(['TRENDING', 'RANGING', 'VOLATILE']);
+
+function finite(value, fallback = NaN) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, finite(value, min)));
-}
-
-function upper(value, fallback = '') {
-  const text = String(value ?? fallback).trim().toUpperCase();
-  return text || fallback;
-}
-
-function uniqueStrings(values, max = 12) {
-  if (!Array.isArray(values)) return [];
-  return [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))].slice(0, max);
-}
-
 class AIValidator {
   constructor() {
-    this.allowedActions = ['BUY', 'SELL', 'HOLD'];
-    this.allowedSentiments = ['BULLISH', 'BEARISH', 'NEUTRAL'];
-    this.allowedConditions = ['TRENDING', 'RANGING', 'VOLATILE'];
-    this.allowedLeverages = [4, 5, 10, 100];
+    this.allowedLeverages = [...config.risk.allowedLeverages];
   }
 
   normalizeLeverage(value) {
-    const numeric = Math.floor(finite(value));
-    if (this.allowedLeverages.includes(numeric)) return numeric;
-    const below = this.allowedLeverages.filter(item => item <= numeric);
-    return below.length ? below[below.length - 1] : 4;
+    const numeric = Math.trunc(finite(value, 0));
+    return this.allowedLeverages.includes(numeric) ? numeric : 0;
   }
 
-  calculateRiskReward(action, entryPrice, stopLoss, takeProfit) {
-    if (!['BUY', 'SELL'].includes(action)) return 0;
-    const risk = Math.abs(finite(entryPrice) - finite(stopLoss));
-    const reward = Math.abs(finite(takeProfit) - finite(entryPrice));
-    return risk > 0 ? reward / risk : 0;
-  }
-
-  validate(response, context = {}) {
+  validate(response) {
     const errors = [];
     const warnings = [];
-    const strictPrices = context.strictPrices === true;
-
     if (!response || typeof response !== 'object' || Array.isArray(response)) {
-      errors.push('AI response is null, non-object, or an array');
-      return { valid: false, errors, warnings, sanitized: this.getDefaultResponse() };
+      return { valid: false, errors: ['AI response is not an object'], warnings, sanitized: this.getDefaultResponse() };
     }
 
-    const sanitized = { ...response };
-    sanitized.action = upper(sanitized.action, 'HOLD');
-    if (!this.allowedActions.includes(sanitized.action)) {
-      errors.push(`Unsupported action: ${sanitized.action}`);
-      sanitized.action = 'HOLD';
-    }
+    const action = String(response.action || '').toUpperCase();
+    const confidence = finite(response.confidence);
+    if (!ACTIONS.has(action)) errors.push('action must be BUY, SELL or HOLD');
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 100) errors.push('confidence must be between 0 and 100');
 
-    sanitized.sentiment = upper(sanitized.sentiment, sanitized.action === 'BUY' ? 'BULLISH' : sanitized.action === 'SELL' ? 'BEARISH' : 'NEUTRAL');
-    if (!this.allowedSentiments.includes(sanitized.sentiment)) {
-      warnings.push('Invalid sentiment was normalized to NEUTRAL');
-      sanitized.sentiment = 'NEUTRAL';
-    }
+    const sanitized = {
+      sentiment: SENTIMENTS.has(String(response.sentiment || '').toUpperCase())
+        ? String(response.sentiment).toUpperCase()
+        : 'NEUTRAL',
+      confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(100, confidence)) : 0,
+      action: ACTIONS.has(action) ? action : 'HOLD',
+      entryPrice: finite(response.entryPrice, 0),
+      stopLoss: finite(response.stopLoss, 0),
+      takeProfit: finite(response.takeProfit, 0),
+      positionSizePercent: Math.max(0, Math.min(100, finite(response.positionSizePercent, 0))),
+      riskReward: Math.max(0, finite(response.riskReward, 0)),
+      marketCondition: CONDITIONS.has(String(response.marketCondition || '').toUpperCase())
+        ? String(response.marketCondition).toUpperCase()
+        : 'RANGING',
+      signals: Array.isArray(response.signals) ? response.signals.map(String).slice(0, 20) : [],
+      warnings: Array.isArray(response.warnings) ? response.warnings.map(String).slice(0, 20) : [],
+      approveLeverage: response.approveLeverage === true,
+      recommendedLeverage: this.normalizeLeverage(response.recommendedLeverage ?? response.approvedLeverage ?? response.leverage),
+      approvedLeverage: this.normalizeLeverage(response.approvedLeverage ?? response.recommendedLeverage ?? response.leverage),
+      leverageApproval: String(response.leverageApproval || '').toUpperCase(),
+      leverageReason: String(response.leverageReason || '').trim(),
+      tpEtaMinutes: Math.max(0, finite(response.tpEtaMinutes, 0)),
+      forecastBias: SENTIMENTS.has(String(response.forecastBias || '').toUpperCase())
+        ? String(response.forecastBias).toUpperCase()
+        : 'NEUTRAL',
+      reasoning: String(response.reasoning || '').trim(),
+      source: response.source,
+      ensemble: response.ensemble || null
+    };
 
-    sanitized.marketCondition = upper(sanitized.marketCondition, 'RANGING');
-    if (!this.allowedConditions.includes(sanitized.marketCondition)) {
-      warnings.push('Invalid market condition was normalized to RANGING');
-      sanitized.marketCondition = 'RANGING';
-    }
-
-    sanitized.forecastBias = upper(sanitized.forecastBias, 'NEUTRAL');
-    if (!this.allowedSentiments.includes(sanitized.forecastBias)) sanitized.forecastBias = 'NEUTRAL';
-
-    sanitized.confidence = clamp(sanitized.confidence, 0, 100);
-    sanitized.positionSizePercent = clamp(sanitized.positionSizePercent, 0, 100);
-    sanitized.tpEtaMinutes = Math.max(0, finite(sanitized.tpEtaMinutes));
-    sanitized.signals = uniqueStrings(sanitized.signals);
-    sanitized.warnings = uniqueStrings([...(sanitized.warnings || []), ...warnings]);
-    sanitized.evidenceFor = uniqueStrings(sanitized.evidenceFor, 8);
-    sanitized.evidenceAgainst = uniqueStrings(sanitized.evidenceAgainst, 8);
-    sanitized.reasoning = String(sanitized.reasoning || 'No reasoning summary was provided.').trim().slice(0, 2500);
-    sanitized.invalidation = String(sanitized.invalidation || '').trim().slice(0, 500);
-    sanitized.scenario = String(sanitized.scenario || '').trim().slice(0, 800);
+    if (!sanitized.reasoning) errors.push('reasoning is required');
 
     if (sanitized.action === 'HOLD') {
       sanitized.entryPrice = 0;
       sanitized.stopLoss = 0;
       sanitized.takeProfit = 0;
       sanitized.positionSizePercent = 0;
-      sanitized.riskReward = 0;
       sanitized.approveLeverage = false;
       sanitized.recommendedLeverage = 0;
       sanitized.approvedLeverage = 0;
       sanitized.leverageApproval = 'REJECTED';
-      sanitized.leverageReason = String(sanitized.leverageReason || 'No leverage is permitted for HOLD.').slice(0, 500);
-      return { valid: errors.length === 0, errors, warnings: sanitized.warnings, sanitized };
-    }
-
-    const contextPrice = finite(context.marketPrice ?? context.price);
-    sanitized.entryPrice = Math.max(0, finite(sanitized.entryPrice, contextPrice));
-    sanitized.stopLoss = Math.max(0, finite(sanitized.stopLoss));
-    sanitized.takeProfit = Math.max(0, finite(sanitized.takeProfit));
-
-    if (sanitized.entryPrice <= 0) {
-      (strictPrices ? errors : warnings).push('BUY/SELL requires a positive entryPrice');
-    }
-
-    if (sanitized.action === 'BUY') {
-      if (sanitized.stopLoss <= 0 || sanitized.stopLoss >= sanitized.entryPrice) {
-        (strictPrices ? errors : warnings).push('BUY stopLoss must be below entryPrice');
-      }
-      if (sanitized.takeProfit <= sanitized.entryPrice) {
-        (strictPrices ? errors : warnings).push('BUY takeProfit must be above entryPrice');
-      }
-      if (sanitized.sentiment === 'BEARISH') warnings.push('BUY action conflicts with BEARISH sentiment');
-    }
-
-    if (sanitized.action === 'SELL') {
-      if (sanitized.stopLoss <= sanitized.entryPrice) {
-        (strictPrices ? errors : warnings).push('SELL stopLoss must be above entryPrice');
-      }
-      if (sanitized.takeProfit <= 0 || sanitized.takeProfit >= sanitized.entryPrice) {
-        (strictPrices ? errors : warnings).push('SELL takeProfit must be below entryPrice');
-      }
-      if (sanitized.sentiment === 'BULLISH') warnings.push('SELL action conflicts with BULLISH sentiment');
-    }
-
-    sanitized.riskReward = this.calculateRiskReward(
-      sanitized.action,
-      sanitized.entryPrice,
-      sanitized.stopLoss,
-      sanitized.takeProfit
-    );
-
-    if (!Number.isFinite(sanitized.riskReward) || sanitized.riskReward <= 0) {
-      (strictPrices ? errors : warnings).push('Risk/reward could not be calculated from entry, stop and target');
-      sanitized.riskReward = 0;
-    }
-
-    const requestedRaw = sanitized.recommendedLeverage ?? sanitized.approvedLeverage ?? sanitized.leverage;
-    const explicitApproval = sanitized.approveLeverage === true || upper(sanitized.leverageApproval) === 'APPROVED';
-
-    if (!explicitApproval) {
-      sanitized.approveLeverage = false;
-      sanitized.recommendedLeverage = 0;
-      sanitized.approvedLeverage = 0;
-      sanitized.leverageApproval = 'REJECTED';
-      sanitized.leverageReason = String(sanitized.leverageReason || 'AI did not explicitly approve leverage.').slice(0, 500);
-      warnings.push('Directional signal has no explicit leverage approval');
+      if (!sanitized.leverageReason) sanitized.leverageReason = 'HOLD has no leverage.';
     } else {
-      sanitized.recommendedLeverage = this.normalizeLeverage(requestedRaw);
-      sanitized.approvedLeverage = sanitized.recommendedLeverage;
-      sanitized.approveLeverage = true;
-      sanitized.leverageApproval = 'APPROVED';
-      sanitized.leverageReason = String(sanitized.leverageReason || `${sanitized.recommendedLeverage}x selected by AI.`).slice(0, 500);
+      if (!(sanitized.entryPrice > 0)) errors.push('BUY/SELL requires entryPrice > 0');
+      if (!(sanitized.stopLoss > 0)) errors.push('BUY/SELL requires stopLoss > 0');
+      if (!(sanitized.takeProfit > 0)) errors.push('BUY/SELL requires takeProfit > 0');
+      if (sanitized.action === 'BUY') {
+        if (!(sanitized.stopLoss < sanitized.entryPrice)) errors.push('BUY stopLoss must be below entryPrice');
+        if (!(sanitized.takeProfit > sanitized.entryPrice)) errors.push('BUY takeProfit must be above entryPrice');
+      } else {
+        if (!(sanitized.stopLoss > sanitized.entryPrice)) errors.push('SELL stopLoss must be above entryPrice');
+        if (!(sanitized.takeProfit < sanitized.entryPrice)) errors.push('SELL takeProfit must be below entryPrice');
+      }
+
+      const actualRisk = Math.abs(sanitized.entryPrice - sanitized.stopLoss);
+      const actualReward = Math.abs(sanitized.takeProfit - sanitized.entryPrice);
+      const actualRR = actualRisk > 0 ? actualReward / actualRisk : 0;
+      sanitized.riskReward = actualRR;
+      if (!(actualRR > 0)) errors.push('risk/reward cannot be calculated');
+
+      if (!sanitized.approveLeverage) errors.push('BUY/SELL requires approveLeverage=true');
+      if (sanitized.leverageApproval !== 'APPROVED') errors.push('BUY/SELL requires leverageApproval=APPROVED');
+      if (!this.allowedLeverages.includes(sanitized.recommendedLeverage)) errors.push('recommendedLeverage is not an allowed tier');
+      if (sanitized.approvedLeverage !== sanitized.recommendedLeverage) errors.push('approvedLeverage must equal recommendedLeverage');
+      if (!sanitized.leverageReason) errors.push('leverageReason is required');
     }
 
-    sanitized.warnings = uniqueStrings([...(sanitized.warnings || []), ...warnings]);
-    return { valid: errors.length === 0, errors, warnings: sanitized.warnings, sanitized };
+    if (errors.length) {
+      return {
+        valid: false,
+        errors,
+        warnings,
+        sanitized: {
+          ...this.getDefaultResponse(),
+          reasoning: `Rejected invalid AI response: ${errors.join('; ')}`,
+          warnings: [...sanitized.warnings, ...errors]
+        }
+      };
+    }
+
+    return { valid: true, errors, warnings, sanitized };
   }
 
-  sanitize(response, context = {}) {
-    return this.validate(response, context).sanitized;
+  sanitize(response) {
+    return this.validate(response).sanitized;
   }
 
-  getDefaultResponse(reason = 'AI response invalid - default HOLD') {
+  getDefaultResponse() {
     return {
-      sentiment: 'NEUTRAL',
-      confidence: 0,
-      action: 'HOLD',
-      entryPrice: 0,
-      stopLoss: 0,
-      takeProfit: 0,
-      positionSizePercent: 0,
-      riskReward: 0,
-      marketCondition: 'RANGING',
-      signals: [],
-      warnings: [reason],
-      evidenceFor: [],
-      evidenceAgainst: [],
-      invalidation: '',
-      scenario: '',
-      approveLeverage: false,
-      recommendedLeverage: 0,
-      approvedLeverage: 0,
-      leverageApproval: 'REJECTED',
-      leverageReason: 'AI response invalid; leverage denied.',
-      tpEtaMinutes: 0,
-      forecastBias: 'NEUTRAL',
-      reasoning: reason
+      sentiment: 'NEUTRAL', confidence: 0, action: 'HOLD', entryPrice: 0,
+      stopLoss: 0, takeProfit: 0, positionSizePercent: 0, riskReward: 0,
+      marketCondition: 'RANGING', signals: [], warnings: ['AI response rejected'],
+      approveLeverage: false, recommendedLeverage: 0, approvedLeverage: 0,
+      leverageApproval: 'REJECTED', leverageReason: 'Invalid AI response; leverage denied.',
+      tpEtaMinutes: 0, forecastBias: 'NEUTRAL', reasoning: 'No valid AI response.',
+      ensemble: null
     };
   }
 
   validateTradeParams(params) {
-    const errors = [];
-    const action = upper(params?.action);
-    if (!params?.coin) errors.push('Missing coin');
-    if (!['BUY', 'SELL'].includes(action)) errors.push('Action must be BUY or SELL');
-    if (finite(params?.entryPrice) <= 0) errors.push('Invalid entryPrice');
-    if (finite(params?.stopLoss) <= 0) errors.push('Invalid stopLoss');
-    if (finite(params?.takeProfit) <= 0) errors.push('Invalid takeProfit');
-    if (finite(params?.size) <= 0) errors.push('Invalid size');
-    if (!this.allowedLeverages.includes(Number(params?.leverage))) errors.push('Invalid AI leverage tier');
-
-    if (action === 'BUY') {
-      if (finite(params.stopLoss) >= finite(params.entryPrice)) errors.push('Stop loss must be below entry for BUY');
-      if (finite(params.takeProfit) <= finite(params.entryPrice)) errors.push('Take profit must be above entry for BUY');
-    }
-    if (action === 'SELL') {
-      if (finite(params.stopLoss) <= finite(params.entryPrice)) errors.push('Stop loss must be above entry for SELL');
-      if (finite(params.takeProfit) >= finite(params.entryPrice)) errors.push('Take profit must be below entry for SELL');
-    }
-
+    const result = this.validate({
+      ...params,
+      confidence: params.confidence ?? 0,
+      sentiment: params.sentiment || (params.action === 'BUY' ? 'BULLISH' : 'BEARISH'),
+      marketCondition: params.marketCondition || 'RANGING',
+      reasoning: params.reasoning || 'Validated execution plan',
+      approveLeverage: true,
+      recommendedLeverage: params.leverage,
+      approvedLeverage: params.leverage,
+      leverageApproval: 'APPROVED',
+      leverageReason: params.leverageReason || 'Validated tier'
+    });
+    const errors = [...result.errors];
+    if (!(finite(params.size, 0) > 0)) errors.push('size must be > 0');
     return { valid: errors.length === 0, errors };
   }
 
   isConfidenceHighEnough(confidence, threshold = 55) {
-    return finite(confidence) >= finite(threshold, 55);
+    return finite(confidence, 0) >= threshold;
   }
 
-  isRiskRewardGoodEnough(riskReward, threshold = 1.15) {
-    return finite(riskReward) >= finite(threshold, 1.15);
+  isRiskRewardGoodEnough(riskReward, threshold = config.risk.minRiskReward) {
+    return finite(riskReward, 0) >= threshold;
   }
 }
 
 module.exports = new AIValidator();
-module.exports.AIValidator = AIValidator;

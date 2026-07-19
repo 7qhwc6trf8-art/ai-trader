@@ -1,29 +1,32 @@
 {
-  "name": "trading-bot-demo",
-  "version": "2.0.0",
-  "description": "Торговый бот в демо-режиме",
-  "main": "src/bot.js",
+  "name": "ai-trader-v16-autonomous",
+  "version": "16.0.0",
+  "description": "Fail-closed Bybit AI trading research and execution system with persistent risk controls.",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node src/bot.js",
+    "check": "node scripts/check.js",
+    "test": "node test/run.js",
+    "verify": "npm run check && npm test",
+    "doctor": "node scripts/doctor.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.112.3",
-    "axios": "^1.18.1",
-    "better-sqlite3": "^12.11.1",
-    "canvas": "^3.2.3",
-    "ccxt": "^4.5.66",
-    "chart.js": "^4.5.1",
-    "chartjs-chart-financial": "^0.2.1",
-    "chartjs-node-canvas": "^5.0.0",
-    "dotenv": "^16.6.1",
+    "@anthropic-ai/sdk": "^0.67.0",
+    "@napi-rs/canvas": "^0.1.80",
+    "ccxt": "^4.4.99",
+    "dotenv": "^17.2.3",
     "node-cache": "^5.1.2",
-    "node-cron": "^3.0.3",
-    "openai": "^6.48.0",
+    "node-cron": "^4.2.1",
     "technicalindicators": "^3.1.0",
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "ws": "^8.18.3"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.0"
+  "optionalDependencies": {
+    "canvas": "^3.2.0",
+    "better-sqlite3": "^12.4.1"
   }
 }

@@ -102,3 +102,4 @@ module.exports = {
   calculateVWAP,
   calculateFibonacci
 };
+

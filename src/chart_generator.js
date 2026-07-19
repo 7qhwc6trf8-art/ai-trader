@@ -1,4 +1,4 @@
-const { createCanvas } = require('canvas');
+const { createCanvas } = require('./canvas_adapter');
 const fs = require('fs');
 const path = require('path');
 const { calculateFibonacci } = require('./technical_tools');
@@ -656,3 +656,4 @@ class ChartGenerator {
 }
 
 module.exports = new ChartGenerator();
+

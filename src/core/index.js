@@ -1,6 +1,6 @@
 'use strict';
-
 module.exports = {
-  config: require('./config'),
+  ...require('./config'),
+  keyedMutex: require('./keyed_mutex'),
   logger: require('./logger')
 };

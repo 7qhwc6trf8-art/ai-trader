@@ -740,13 +740,22 @@ class ProfessionalLogger {
     if (global.__ULTRA_LOGGER_PROCESS_HANDLERS__) return;
     global.__ULTRA_LOGGER_PROCESS_HANDLERS__ = true;
 
+    const terminateAfterFatal = () => {
+      if (!envBool('SHUTDOWN_ON_FATAL', true)) return;
+      process.exitCode = 1;
+      setTimeout(() => process.exit(1), 25);
+    };
+
     process.on('uncaughtException', error => {
       this.fatal('UNCAUGHT_EXCEPTION', error);
       this.flush();
+      terminateAfterFatal();
     });
 
     process.on('unhandledRejection', reason => {
-      this.error('UNHANDLED_REJECTION', reason instanceof Error ? reason : new Error(compact(reason, 1000)));
+      this.fatal('UNHANDLED_REJECTION', reason instanceof Error ? reason : new Error(compact(reason, 1000)));
+      this.flush();
+      terminateAfterFatal();
     });
 
     process.once('beforeExit', () => this.close());
@@ -778,3 +787,4 @@ class ProfessionalLogger {
 module.exports = new ProfessionalLogger();
 module.exports.ProfessionalLogger = ProfessionalLogger;
 module.exports.sanitize = sanitize;
+

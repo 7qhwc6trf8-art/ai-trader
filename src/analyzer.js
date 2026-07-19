@@ -3,6 +3,19 @@ const { RSI, EMA, MACD, BollingerBands, Stochastic, ATR } = require("technicalin
 const logger = require('./logger');
 const { calculateFibonacci, calculatePivotPoints, calculateVWAP } = require('./technical_tools');
 
+
+function calculateChange24h(candles, currentPrice) {
+    if (!Array.isArray(candles) || candles.length < 2 || !(currentPrice > 0)) return 0;
+    const target = Number(candles[candles.length - 1][0]) - 24 * 60 * 60 * 1000;
+    let reference = candles[0];
+    for (const candle of candles) {
+        if (Number(candle[0]) <= target) reference = candle;
+        else break;
+    }
+    const referencePrice = Number(reference?.[4]);
+    return referencePrice > 0 ? (currentPrice - referencePrice) / referencePrice * 100 : 0;
+}
+
 async function getMarketData(coin, timeframe = "1h", limit = 200) {
     logger.step('MARKET_DATA_FETCH', { coin, timeframe, limit });
 
@@ -67,7 +80,7 @@ async function getMarketData(coin, timeframe = "1h", limit = 200) {
             timeframe,
             limit,
             price,
-            change24h: ((closes[lastIndex] - closes[Math.max(0, lastIndex - 24)]) / (closes[Math.max(0, lastIndex - 24)] || closes[lastIndex] || 1) * 100) || 0,
+            change24h: calculateChange24h(candles, closes[lastIndex]),
             volume: volumes[lastIndex],
             volumeSpike,
             rsi,
@@ -120,3 +133,4 @@ async function getMarketData(coin, timeframe = "1h", limit = 200) {
 }
 
 module.exports = { getMarketData, TIMEFRAMES: ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] };
+

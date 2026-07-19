@@ -1,0 +1,65 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v16-order-'));
+process.env.EXECUTION_MODE = 'analysis';
+process.env.TRADING_DB_PATH = path.join(dir, 'trading.db');
+process.env.DATA_DIR = dir;
+process.env.LOGS_DIR = dir;
+const bybit = require('../src/bybit_client');
+const manager = require('../src/order_manager');
+const db = require('../src/database');
+const journal = require('../src/trade_journal');
+(async () => {
+  assert.strictEqual(manager.isOrderFilled({ status: 'closed', filled: 1 }), true);
+  assert.strictEqual(manager.isOrderFilled({ status: 'open', amount: 1, filled: 0.5, remaining: 0.5 }), false);
+  assert.strictEqual(manager.positionChanged(null, { side: 'long', size: 1 }), true);
+  const id = manager.buildClientOrderId('BTC/USDT:USDT', 'BUY', 'bad id $$$ long enough');
+  assert.ok(id.length <= 36);
+  assert.ok(/^[a-zA-Z0-9_-]+$/.test(id));
+  manager.sleep = async () => {};
+  let verifyCalls = 0;
+  bybit.setTradingStop = async () => ({ success: true });
+  bybit.verifyPositionProtection = async () => ({ protected: ++verifyCalls >= 2, actualStopLoss: 98, actualTakeProfit: 104 });
+  const protection = await manager.ensureProtection('BTC', 'BUY', 98, 104, 0);
+  assert.strictEqual(protection.success, true);
+  assert.strictEqual(protection.attempt, 2);
+
+  let closeCalls = 0;
+  const originalGetPositions = bybit.getPositions;
+  const originalClosePosition = bybit.closePosition;
+  const originalGetOpenPositions = db.getOpenPositions;
+  const originalCloseDbPosition = db.closePosition;
+  const originalSavePosition = db.savePosition;
+  bybit.getPositions = async () => { bybit.lastPositionsError = 'temporary outage'; return []; };
+  bybit.closePosition = async () => { closeCalls += 1; return { id: 'closed' }; };
+  db.getOpenPositions = () => [{ coin: 'BTC', stopLoss: 98, takeProfit: 104 }];
+  db.closePosition = () => { closeCalls += 1; };
+  const unavailable = await manager.verifyOpenPositions();
+  assert.strictEqual(unavailable.success, false);
+  assert.strictEqual(closeCalls, 0, 'API outage must not mark or close positions');
+
+  journal.submitted({ signalId: 'recover-signal', tradeId: 'recover-order', orderId: 'recover-order', coin: 'ETH', action: 'BUY', stopLoss: 98, takeProfit: 104, size: 1, leverage: 2 });
+  bybit.getPositions = async () => {
+    bybit.lastPositionsError = null;
+    return [{ coin: 'ETH', symbol: 'ETH/USDT:USDT', side: 'long', size: 1, entryPrice: 100, leverage: 2, stopLoss: 0, takeProfit: 0, positionIdx: 0 }];
+  };
+  db.getOpenPositions = () => [];
+  let saved = null;
+  db.savePosition = value => { saved = value; };
+  manager.ensureProtection = async () => ({ success: true });
+  const recovered = await manager.verifyOpenPositions();
+  assert.strictEqual(recovered.success, true);
+  assert.strictEqual(recovered.recovered[0].type, 'LATE_FILL_RECOVERED');
+  assert.strictEqual(saved.stopLoss, 98);
+  assert.strictEqual(journal.findPendingByCoin('ETH'), null);
+
+  bybit.getPositions = originalGetPositions;
+  bybit.closePosition = originalClosePosition;
+  db.getOpenPositions = originalGetOpenPositions;
+  db.closePosition = originalCloseDbPosition;
+  db.savePosition = originalSavePosition;
+  console.log('fill confirmation, protection retry, outage safety and late-fill recovery verified');
+})().catch(error => { console.error(error); process.exit(1); });

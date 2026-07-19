@@ -1,0 +1,16 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'v16-start-'));
+process.env.EXECUTION_MODE = 'analysis';
+process.env.TELEGRAM_TOKEN = 'test-token';
+process.env.AUTHORIZED_TELEGRAM_USER_IDS = '123456';
+process.env.DATA_DIR = path.join(dir, 'data');
+process.env.LOGS_DIR = path.join(dir, 'logs');
+const { runStartupDiagnostics } = require('../src/startup_diagnostics');
+const result = runStartupDiagnostics({ throwOnError: false });
+assert.strictEqual(result.valid, true, result.errors.join(' | '));
+assert.ok(result.modules.canvasBackend);
+console.log('runtime dependencies and writable paths verified');

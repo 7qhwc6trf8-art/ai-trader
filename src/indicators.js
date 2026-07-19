@@ -42,3 +42,4 @@ function calculate(candles) {
 }
 
 module.exports = calculate;
+

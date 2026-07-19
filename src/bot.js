@@ -1,6 +1,9 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
+const { runStartupDiagnostics } = require('./startup_diagnostics');
+const { config } = require('./core/config');
 const { Telegraf, Markup, session } = require("telegraf");
+const { createAuthorizationMiddleware, getAuthorizedIds } = require('./telegram_auth');
 const { getMarketData, TIMEFRAMES } = require("./analyzer");
 const chartGenerator = require("./chart_generator");
 const patternVisualizer = require("./pattern_visualizer");
@@ -10,6 +13,7 @@ const marketScanner = require("./market_scanner");
 const { getAutoTradeCoins, getQuickSelectPairs } = require("./coin_universe");
 const ultimateAI = require("./ultimate_ai_trader");
 const bybit = require("./bybit_client");
+const paperBroker = require("./paper_broker");
 const orderManager = require("./order_manager");
 const riskManager = require("./risk_manager");
 const logger = require("./logger");
@@ -27,17 +31,21 @@ const TELEGRAM_HANDLER_TIMEOUT = Math.max(
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN, {
   handlerTimeout: TELEGRAM_HANDLER_TIMEOUT
 });
+const authorizedTelegramIds = getAuthorizedIds();
+bot.use(createAuthorizationMiddleware({ ids: authorizedTelegramIds, logger }));
 bot.use(session());
 
 // ==================== CONSTANTS ====================
 
-const BYBIT_MODE = process.env.BYBIT_MODE || 'ro';
+const BYBIT_MODE = config.bybit.mode;
+const tradingAccount = config.app.executionMode === 'live' ? bybit : paperBroker;
+const tradingAccountLabel = config.app.executionMode === 'live' ? 'BYBIT LIVE' : 'PAPER ACCOUNT';
 // Was 600000 (10 min) and only scanned ONE coin per tick, round-robin.
 // Now this is the pause BETWEEN full sweeps; each sweep itself scans every
 // coin across every timeframe below. Override with AUTO_TRADE_INTERVAL in .env.
-const AUTO_TRADE_INTERVAL = parseInt(process.env.AUTO_TRADE_INTERVAL) || 90000;
+const AUTO_TRADE_INTERVAL = config.scanner.intervalMs;
 const AUTO_TRADE_COINS = getAutoTradeCoins();
-const SCAN_TIMEFRAMES = (process.env.SCAN_TIMEFRAMES || '15m,1h,4h').split(',').map(s => s.trim()).filter(Boolean);
+const SCAN_TIMEFRAMES = [...config.scanner.timeframes];
 const SCAN_STAGGER_MS = parseInt(process.env.SCAN_STAGGER_MS, 10) || 350;
 const AI_SCAN_STAGGER_MS = parseInt(process.env.AI_SCAN_STAGGER_MS, 10) || 1200;
 const PAIRS = getQuickSelectPairs();
@@ -180,55 +188,25 @@ function moneyManagementText(result) {
     `\n*Position size:* ${finiteNumber(result.positionSize).toFixed(8)} · ${finiteNumber(plan.marginPercent).toFixed(1)}% account margin`;
 }
 
-
-function ultraReasoningText(result) {
-  const evidence = result?.reasoningEvidence;
-  const calibration = result?.calibration;
-  if (!evidence) return '';
-
-  const score = evidence.score || {};
-  const direction = compactText(score.dominantDirection || 'NEUTRAL', 20);
-  const dataQuality = finiteNumber(evidence.dataQuality);
-  const edge = finiteNumber(score.absoluteEdge);
-  const ceiling = finiteNumber(score.confidenceCeiling);
-  const aligned = finiteNumber(score.alignedTimeframes);
-  const warning = Array.isArray(result?.warnings) && result.warnings.length
-    ? `
-*Main risk:* ${compactText(result.warnings[0], 180)}`
-    : '';
-  const invalidation = result?.invalidation
-    ? `
-*Invalidation:* ${compactText(result.invalidation, 180)}`
-    : '';
-  const calibrationText = calibration
-    ? `
-*Confidence calibration:* ${finiteNumber(calibration.rawConfidence).toFixed(0)}% raw -> ${finiteNumber(calibration.calibratedConfidence, result.confidence).toFixed(0)}% final`
-    : '';
-
-  return `
-*Ultra evidence:* ${direction} edge ${edge.toFixed(1)} · data ${dataQuality.toFixed(0)}% · ${aligned.toFixed(0)} aligned TF · ceiling ${ceiling.toFixed(0)}%` +
-    calibrationText + invalidation + warning;
-}
-
 // ==================== CONNECT BYBIT ====================
 
-let apiKey, apiSecret;
+function connectBybitIfConfigured() {
+  const readWrite = BYBIT_MODE === 'rw';
+  const apiKey = readWrite ? process.env.BYBIT_API_KEY_RW : process.env.BYBIT_API_KEY_RO;
+  const apiSecret = readWrite ? process.env.BYBIT_API_SECRET_RW : process.env.BYBIT_API_SECRET_RO;
+  logger.action(readWrite ? 'USING_RW_KEYS' : 'USING_RO_KEYS', {});
 
-if (BYBIT_MODE === 'rw') {
-  apiKey = process.env.BYBIT_API_KEY_RW;
-  apiSecret = process.env.BYBIT_API_SECRET_RW;
-  logger.action('USING_RW_KEYS', {});
-} else {
-  apiKey = process.env.BYBIT_API_KEY_RO;
-  apiSecret = process.env.BYBIT_API_SECRET_RO;
-  logger.action('USING_RO_KEYS', {});
-}
-
-if (apiKey && apiSecret) {
-  const connected = bybit.connect(apiKey, apiSecret, BYBIT_MODE);
-  logger.action('BYBIT_CONNECTION', { connected, mode: BYBIT_MODE });
-} else {
-  logger.error('BYBIT_KEYS_MISSING', 'API keys not found');
+  if (apiKey && apiSecret) {
+    const connected = bybit.connect(apiKey, apiSecret, BYBIT_MODE);
+    logger.action('BYBIT_CONNECTION', { connected, mode: BYBIT_MODE });
+    return connected;
+  }
+  if (config.app.executionMode === 'live') {
+    logger.error('BYBIT_KEYS_MISSING', 'Live execution requires Bybit RW API keys.');
+  } else {
+    logger.warn('BYBIT_KEYS_OPTIONAL', { executionMode: config.app.executionMode });
+  }
+  return false;
 }
 
 // ==================== STATE ====================
@@ -294,7 +272,7 @@ const telegramCommands = [
   { command: 'connection', description: '🔌 Check Bybit and AI APIs' },
   { command: 'status', description: '📊 View bot status' },
   { command: 'performance', description: '🏆 View performance' },
-  { command: 'daily', description: '💵 View daily $10 target' }
+  { command: 'daily', description: '💵 View daily profit band' }
 ];
 
 // ==================== PATTERN ZOOM SESSIONS ====================
@@ -324,12 +302,13 @@ function createPatternSession(coin, data, patterns, decision, fullChartPath, cap
   return id;
 }
 
-setInterval(() => {
+const patternCleanupInterval = setInterval(() => {
   const cutoff = Date.now() - PATTERN_SESSION_TTL_MS;
   for (const [id, session] of patternSessions) {
     if (session.createdAt < cutoff) patternSessions.delete(id);
   }
 }, 10 * 60 * 1000);
+patternCleanupInterval.unref?.();
 
 // `extraRows` lets callers (like the pair_ selector, which already shows
 // BUY/SELL/Refresh buttons) keep their own buttons above the pattern buttons.
@@ -473,7 +452,7 @@ bot.action(/^back_(.+)$/, async (ctx) => {
 
 // Telegram can keep an older reply keyboard after the bot is updated. The
 // previous source also contained double-encoded emoji bytes, so tapping one
-// Cached buttons from older builds can still send mojibake text.
+// of those cached buttons sends text such as "Ã°Å¸... Ultra AI Auto-Trade".
 // Translate only known legacy button labels before Telegraf's hears handlers.
 const legacyButtonAliases = new Map([
   ['AI Provider', '🧠 AI Engine'],
@@ -503,7 +482,7 @@ function normalizeLegacyButtonText(ctx) {
   const text = ctx.message?.text;
   if (typeof text !== 'string') return;
 
-  const looksCorrupted = /[\u00C2\u00C3\u00E2\u00F0\u00C5]|\uFFFD/.test(text);
+  const looksCorrupted = /Ã|Â|â|ð|Å|�/.test(text);
   for (const [legacyLabel, currentLabel] of legacyButtonAliases) {
     const isKnownOldLabel = text === legacyLabel || text === `🤖 ${legacyLabel}` || text === `⏹️ ${legacyLabel}`;
     if (isKnownOldLabel || (looksCorrupted && text.endsWith(legacyLabel))) {
@@ -613,11 +592,11 @@ function formatChartCaption(data, pair, tf) {
 async function showBalance(ctx, messageId = null) {
   logger.action('SHOW_BALANCE', { user: ctx.from?.username || ctx.from?.id });
   try {
-    const balance = await bybit.getBalance();
-    const mode = bybit.getMode ? bybit.getMode().toUpperCase() : 'RO';
+    const balance = await tradingAccount.getBalance();
+    const mode = tradingAccount.getMode ? tradingAccount.getMode().toUpperCase() : config.app.executionMode.toUpperCase();
     
     let message = `
-💎 *BYBIT UNIFIED ACCOUNT*
+💎 *${tradingAccountLabel}*
 ━━━━━━━━━━━━━━━━━━
 
 💳 *Available to trade:* $${balance.tradableUSD.toFixed(2)}
@@ -669,17 +648,17 @@ async function showPortfolio(ctx, messageId = null) {
   logger.action('SHOW_PORTFOLIO', { user: ctx.from?.username || ctx.from?.id });
   try {
     const [portfolio, balance] = await Promise.all([
-      bybit.getPortfolio(),
-      bybit.getBalance()
+      tradingAccount.getPortfolio(),
+      tradingAccount.getBalance()
     ]);
-    const mode = bybit.getMode ? bybit.getMode().toUpperCase() : 'RO';
+    const mode = tradingAccount.getMode ? tradingAccount.getMode().toUpperCase() : config.app.executionMode.toUpperCase();
     const positions = Array.isArray(portfolio?.positions) ? portfolio.positions : [];
     const totalValue = finiteNumber(portfolio?.totalValue, finiteNumber(balance?.totalUSD));
     const availableToTrade = finiteNumber(portfolio?.availableToTrade, finiteNumber(balance?.tradableUSD));
     const maxPositions = finiteNumber(ultimateAI.maxPositions, 1);
     
     let message = `
-💼 *BYBIT PORTFOLIO*
+💼 *${tradingAccountLabel} PORTFOLIO*
 ━━━━━━━━━━━━━━━━━━
 
 💰 *Total equity:* $${totalValue.toFixed(2)}
@@ -734,8 +713,8 @@ async function showPortfolio(ctx, messageId = null) {
 async function showOrders(ctx, messageId = null) {
   logger.action('SHOW_ORDERS', { user: ctx.from?.username || ctx.from?.id });
   try {
-    const orders = await bybit.getOrders(null, 20);
-    const mode = bybit.getMode ? bybit.getMode().toUpperCase() : 'RO';
+    const orders = await tradingAccount.getOrders(null, 20);
+    const mode = tradingAccount.getMode ? tradingAccount.getMode().toUpperCase() : config.app.executionMode.toUpperCase();
     
     if (orders.length === 0) {
       const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.ordersMsgId, `📝 No orders found\n🔑 Mode: ${mode}`);
@@ -744,7 +723,7 @@ async function showOrders(ctx, messageId = null) {
     }
     
     let message = `
-📝 BYBIT ORDERS - ${new Date().toISOString()}
+📝 ${tradingAccountLabel} ORDERS - ${new Date().toISOString()}
 🔑 Mode: ${mode}
 
 `;
@@ -772,7 +751,7 @@ async function showOrders(ctx, messageId = null) {
       message += `\n... and ${orders.length - 20} more orders`;
     }
     
-    message += `\n${bybit.isConnected ? '✅ Live Bybit Data' : '⚠️ Mock Data'}`;
+    message += config.app.executionMode === 'live' ? `\n${bybit.isConnected ? '✅ Live Bybit Data' : '❌ Bybit disconnected'}` : '\n🟡 Paper execution history';
     
     const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.ordersMsgId, message);
     ctx.session.ordersMsgId = newId;
@@ -789,28 +768,36 @@ async function showOrders(ctx, messageId = null) {
 
 async function showPositions(ctx) {
   logger.action('SHOW_POSITIONS', { user: ctx.from?.username || ctx.from?.id });
-  
-  const positions = await orderManager.getOpenPositions();
-  
+
+  const portfolio = await tradingAccount.getPortfolio();
+  const positions = Array.isArray(portfolio?.positions) ? portfolio.positions : [];
   if (positions.length === 0) {
-    await sendOrEdit(ctx, ctx.chat.id, null, '📊 No open positions');
+    await sendOrEdit(ctx, ctx.chat.id, null, `📊 No open positions in ${tradingAccountLabel}`);
     return;
   }
-  
-  let message = '📊 OPEN POSITIONS\n\n';
-  for (const pos of positions) {
-    const pnl = await orderManager.getPositionPnL(pos.coin);
-    message += `${pos.coin} ${pos.side.toUpperCase()}\n`;
-    message += `  Size: ${pos.size.toFixed(6)}\n`;
-    message += `  Entry: $${pos.entryPrice.toFixed(2)}\n`;
-    if (pnl) {
-      message += `  Current: $${pnl.currentPrice.toFixed(2)}\n`;
-      message += `  PnL: ${pnl.pnlPercent >= 0 ? '+' : ''}${pnl.pnlPercent.toFixed(2)}% ($${pnl.pnl.toFixed(2)})\n`;
-    }
-    message += '\n';
+
+  let message = `📊 ${tradingAccountLabel} OPEN POSITIONS
+
+`;
+  for (const pos of positions.slice(0, 20)) {
+    const coin = compactText(pos.coin || pos.symbol || 'UNKNOWN', 24);
+    const side = String(pos.side || pos.action || 'unknown').toUpperCase();
+    const pnl = finiteNumber(pos.unrealizedPnl);
+    const pnlPercent = finiteNumber(pos.percentage);
+    message += `${coin} ${side}
+`;
+    message += `  Size: ${finiteNumber(pos.size).toFixed(8)} · ${finiteNumber(pos.leverage, 1)}x
+`;
+    message += `  Entry: $${finiteNumber(pos.entryPrice).toFixed(6)} · Mark: $${finiteNumber(pos.markPrice).toFixed(6)}
+`;
+    message += `  SL: $${finiteNumber(pos.stopLoss).toFixed(6)} · TP: $${finiteNumber(pos.takeProfit).toFixed(6)}
+`;
+    message += `  PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)
+
+`;
   }
-  
-  await sendOrEdit(ctx, ctx.chat.id, null, message);
+
+  await sendOrEdit(ctx, ctx.chat.id, null, message, { parse_mode: false });
 }
 
 async function showAIStatus(ctx) {
@@ -845,7 +832,6 @@ async function showAIStatus(ctx) {
 ${ai.ready ? '🟢' : '🔴'} *Status:* ${ai.ready ? 'Ready' : 'Setup required'}
 ✨ *Provider:* ${providerName}
 ⚙️ *Model:* ${ai.model}
-🧠 *Reasoning engine:* V${ai.engineVersion || '14'}
 🎯 *Decision mode:* AI chooses BUY / SELL / HOLD
 ⚖️ *Pipeline:* ${ai.provider === 'ensemble' ? 'Claude + DeepSeek independent reviews → final AI judge' : 'Single AI provider'}
 📊 *Confidence gate:* ${ultimateAI.minimumExecutionConfidence > 0 ? `${ultimateAI.minimumExecutionConfidence}%` : 'Disabled — AI decision used directly'}
@@ -1042,8 +1028,10 @@ async function handleDailyTarget(ctx) {
 
 Status: ${state}
 Net realized PnL: $${finiteNumber(daily.netPnl).toFixed(2)}
-Target: $${finiteNumber(daily.target).toFixed(2)}
-Remaining: $${finiteNumber(daily.remaining).toFixed(2)}
+Soft target (${finiteNumber(daily.softTargetPct).toFixed(2)}%): $${finiteNumber(daily.softTarget).toFixed(2)}${daily.softReached ? ' — reached' : ''}
+Hard target (${finiteNumber(daily.hardTargetPct).toFixed(2)}%): $${finiteNumber(daily.target).toFixed(2)}
+Profit lock: ${daily.profitLockActive ? 'ACTIVE — reduced risk and leverage' : 'Inactive'}
+Remaining to hard target: $${finiteNumber(daily.remaining).toFixed(2)}
 Progress: ${finiteNumber(daily.progress).toFixed(1)}%
 Gross profit: $${finiteNumber(daily.grossProfit).toFixed(2)}
 Gross loss: $${finiteNumber(daily.grossLoss).toFixed(2)}
@@ -1277,31 +1265,42 @@ bot.hears('⏱️ Timeframe', async (ctx) => {
   });
 });
 
-function startBackgroundMarketScan(ctx, trigger) {
-  setImmediate(() => {
-    runFullMarketScan(ctx).catch(async (error) => {
-      logger.error('BACKGROUND_MARKET_SCAN', error, { trigger });
-      try {
-        await sendOrEdit(
-          ctx,
-          ctx.chat.id,
-          autoTradeMsgId,
-          `❌ Background scan failed: ${compactText(error.message, 180)}`,
-          { parse_mode: false }
-        );
-      } catch (notificationError) {
-        logger.error('BACKGROUND_SCAN_NOTIFICATION', notificationError);
-      }
-    });
-  });
+async function runAutoTradeLoop(ctx, trigger = 'loop') {
+  if (!isAutoTrading) return;
+  try {
+    await runFullMarketScan(ctx);
+  } catch (error) {
+    logger.error('BACKGROUND_MARKET_SCAN', error, { trigger });
+    try {
+      await sendOrEdit(ctx, ctx.chat.id, autoTradeMsgId, `Background scan failed: ${compactText(error.message, 180)}`, { parse_mode: false });
+    } catch (notificationError) {
+      logger.error('BACKGROUND_SCAN_NOTIFICATION', notificationError);
+    }
+  } finally {
+    if (isAutoTrading) {
+      autoTradeInterval = setTimeout(() => runAutoTradeLoop(ctx, 'scheduled'), AUTO_TRADE_INTERVAL);
+    }
+  }
+}
+
+function createBackgroundContext(chatId) {
+  const numericChatId = Number(chatId);
+  return {
+    chat: { id: numericChatId },
+    from: { id: numericChatId, username: 'autonomous-v16' },
+    telegram: bot.telegram,
+    reply: (text, options = {}) => bot.telegram.sendMessage(numericChatId, text, options),
+    replyWithDocument: (document, options = {}) => bot.telegram.sendDocument(numericChatId, document, options),
+    replyWithPhoto: (photo, options = {}) => bot.telegram.sendPhoto(numericChatId, photo, options)
+  };
 }
 
 bot.hears('🚀 Start Auto-Trade', async (ctx) => {
   logger.button('ULTRA_AI_AUTO_TRADE', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   
   const mode = bybit.getMode ? bybit.getMode() : 'ro';
-  if (mode === 'ro') {
-    await sendOrEdit(ctx, ctx.chat.id, null, '❌ READ-ONLY MODE\n\nAuto-trading requires READ-WRITE keys.\n\nSet BYBIT_MODE=rw in .env');
+  if (config.app.executionMode === 'live' && mode === 'ro') {
+    await sendOrEdit(ctx, ctx.chat.id, null, 'LIVE mode requires READ-WRITE Bybit keys and BYBIT_MODE=rw.');
     return;
   }
 
@@ -1313,13 +1312,15 @@ bot.hears('🚀 Start Auto-Trade', async (ctx) => {
   const status = ultimateAI.getStatus();
   
   await sendOrEdit(ctx, ctx.chat.id, null, `
-🤖 ULTRA AI AUTO-TRADE ACTIVATED
+V16 AUTONOMOUS SCANNER ACTIVATED
+
+Execution mode: ${config.app.executionMode.toUpperCase()}
 
 🧠 Ultra AI Trading System
 • Scanning: ${AUTO_TRADE_COINS.join(', ')} (all ${AUTO_TRADE_COINS.length} coins every sweep)
 • Timeframes: ${SCAN_TIMEFRAMES.join(', ')}
 • Sweep interval: Every ${Math.round(AUTO_TRADE_INTERVAL / 1000)}s
-• Risk: 1.2% per trade
+• Risk: configured stop-based sizing (default 0.30% per trade)
 • Max Positions: ${ultimateAI.maxPositions}
 • Execution Confidence: ${ultimateAI.minimumExecutionConfidence > 0 ? `${ultimateAI.minimumExecutionConfidence}%` : 'AI decides (no manual confidence gate)'}
 • Patterns: AI context only (no manual requirement)
@@ -1333,26 +1334,16 @@ bot.hears('🚀 Start Auto-Trade', async (ctx) => {
   isAutoTrading = true;
   currentCoinIndex = 0;
 
-  // A full Claude + DeepSeek dual-AI sweep can legitimately exceed Telegram's
-  // middleware timeout. Acknowledge the button immediately and let the scan
-  // continue independently; isScanning prevents overlapping sweeps.
-  autoTradeInterval = setInterval(() => {
-    if (!isAutoTrading) {
-      clearInterval(autoTradeInterval);
-      autoTradeInterval = null;
-      return;
-    }
-    startBackgroundMarketScan(ctx, 'interval');
-  }, AUTO_TRADE_INTERVAL);
-
-  startBackgroundMarketScan(ctx, 'button');
+  // Recursive scheduling starts the next sweep only after the previous one
+  // finishes, preventing overlap and API bursts.
+  runAutoTradeLoop(ctx, 'button');
 });
 
 bot.hears('🛑 Stop Auto-Trade', async (ctx) => {
   logger.button('STOP_AUTO_TRADE', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   isAutoTrading = false;
   if (autoTradeInterval) {
-    clearInterval(autoTradeInterval);
+    clearTimeout(autoTradeInterval);
     autoTradeInterval = null;
   }
   
@@ -1404,7 +1395,7 @@ bot.hears('❓ Help', async (ctx) => {
 • /orders — Order history
 • /positions — Open positions
 • /close BTC — Close a position
-• Direct BUY/SELL buttons are disabled; AI selects 4x, 5x, 10x or 100x
+• Direct BUY/SELL buttons are disabled; AI selects only 1x, 2x, 3x or 5x
 
 🧠 *System*
 • /ai — AI engine status
@@ -1588,7 +1579,7 @@ async function handleSignal(ctx) {
 *Confidence:* ${result.confidence}%
 *AI Consensus:* ${aiConsensusSummary(result)}
 ${officialNewsContext(result)}
-${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}${ultraReasoningText(result)}
+${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}
 
 *Entry:* $${result.entryPrice.toFixed(2)}
 *SL:* $${result.stopLoss.toFixed(2)}
@@ -1656,7 +1647,7 @@ async function handleAnalysis(ctx) {
 *AI Signal:* ${result?.action || 'HOLD'} (${result?.confidence || 0}%)
 *AI Consensus:* ${aiConsensusSummary(result)}
 ${officialNewsContext(result)}
-${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}${ultraReasoningText(result)}
+${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}
 *Entry:* $${result?.entryPrice?.toFixed(2) || 'N/A'}
 *SL:* $${result?.stopLoss?.toFixed(2) || 'N/A'}
 *TP:* $${result?.takeProfit?.toFixed(2) || 'N/A'}
@@ -1705,7 +1696,7 @@ bot.command("coins", async (ctx) => {
   for (let index = 0; index < AUTO_TRADE_COINS.length; index += 10) {
     rows.push(AUTO_TRADE_COINS.slice(index, index + 10).join(', '));
   }
-  await ctx.reply(`V13 scan universe: ${AUTO_TRADE_COINS.length} coins\n\n${rows.join('\n')}\n\nExpensive AI analysis is limited to the top ${marketScanner.maxAIAnalyses} technical candidates per sweep.`);
+  await ctx.reply(`V16 scan universe: ${AUTO_TRADE_COINS.length} coins\n\n${rows.join('\n')}\n\nExpensive AI analysis is limited to the top ${marketScanner.maxAIAnalyses} technical candidates per sweep.`);
 });
 
 // ==================== AUTO-TRADE FUNCTION ====================
@@ -1735,7 +1726,21 @@ async function runFullMarketScan(ctx) {
       return;
     }
 
-    await orderManager.verifyOpenPositions();
+    if (config.app.executionMode === 'live') {
+      const verification = await orderManager.verifyOpenPositions();
+      if (!verification.success) {
+        autoTradeMsgId = await sendOrEdit(
+          ctx,
+          ctx.chat.id,
+          autoTradeMsgId,
+          `LIVE POSITION RECONCILIATION BLOCKED NEW ENTRIES: ${compactText(verification.error, 500)}`,
+          { parse_mode: false }
+        );
+        return;
+      }
+    } else {
+      await paperBroker.syncPositions();
+    }
     const dailyTarget = await ultimateAI.syncDailyPnl({ force: true });
     if (dailyTarget.reached) {
       autoTradeMsgId = await sendOrEdit(
@@ -1745,15 +1750,16 @@ async function runFullMarketScan(ctx) {
         `DAILY TARGET REACHED\nNet realized PnL: $${dailyTarget.netPnl.toFixed(2)} / $${dailyTarget.target.toFixed(2)}\nNew entries paused until ${dailyTarget.timeZone} starts a new day.`,
         { parse_mode: false }
       );
-      isAutoTrading = false;
-      if (autoTradeInterval) {
-        clearInterval(autoTradeInterval);
-        autoTradeInterval = null;
-      }
+      // Keep the autonomous scheduler alive. The risk/day state resets in
+      // the configured timezone, so scanning resumes automatically next day.
       return;
     }
 
-    const dailyLossCheck = riskManager.checkDailyLoss(ultimateAI.dailyLoss);
+    const currentStatus = ultimateAI.getStatus();
+    const dailyLossCheck = riskManager.checkDailyLoss(
+      ultimateAI.dailyLoss,
+      finiteNumber(currentStatus.equity, finiteNumber(currentStatus.balance))
+    );
     if (!dailyLossCheck.passed) {
       autoTradeMsgId = await sendOrEdit(ctx, ctx.chat.id, autoTradeMsgId, `STOPPED: ${dailyLossCheck.reason}`);
       return;
@@ -1770,7 +1776,7 @@ async function runFullMarketScan(ctx) {
       );
       isAutoTrading = false;
       if (autoTradeInterval) {
-        clearInterval(autoTradeInterval);
+        clearTimeout(autoTradeInterval);
         autoTradeInterval = null;
       }
       return;
@@ -1811,7 +1817,7 @@ async function runFullMarketScan(ctx) {
       ctx,
       ctx.chat.id,
       autoTradeMsgId,
-      `V13 MEGA SCAN\nTechnical combinations scanned: ${scannedCount}\nValid candidates: ${candidates.length}\nDeep AI finalists: ${selected.length}\nAI selects 4x/5x/10x/100x; the risk engine may downgrade unsupported or unsafe tiers.`,
+      `V16 AUTONOMOUS SCAN\nTechnical combinations scanned: ${scannedCount}\nValid candidates: ${candidates.length}\nDeep AI finalists: ${selected.length}\nAI selects only 1x/2x/3x/5x; the risk engine may downgrade unsupported or unsafe tiers.`,
       { parse_mode: false }
     );
 
@@ -1850,7 +1856,7 @@ async function runFullMarketScan(ctx) {
             `Pre-scan score: ${scanScore.toFixed(2)}/100\n` +
             `AI signal: ${result?.action || 'HOLD'} (${result?.confidence || 0}%)\n` +
             `AI consensus: ${aiConsensusSummary(result)}\n` +
-            `${officialNewsContext(result)}${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}${ultraReasoningText(result)}\n` +
+            `${officialNewsContext(result)}${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}\n` +
             `Entry: $${finiteNumber(result?.entryPrice).toFixed(4)}\n` +
             `SL: $${finiteNumber(result?.stopLoss).toFixed(4)}\n` +
             `TP: $${finiteNumber(result?.takeProfit).toFixed(4)}\n` +
@@ -1882,7 +1888,7 @@ async function runFullMarketScan(ctx) {
       ctx,
       ctx.chat.id,
       autoTradeMsgId,
-      `V13 SWEEP COMPLETE\nScanned: ${scannedCount} combinations across ${AUTO_TRADE_COINS.length} coins\nDeep AI reviews: ${selected.length}\nDirectional signals: ${signalsFound}\nPositions opened: ${tradesExecuted}\nElapsed: ${elapsedSeconds}s\n${new Date().toISOString()}`,
+      `V16 SWEEP COMPLETE\nScanned: ${scannedCount} combinations across ${AUTO_TRADE_COINS.length} coins\nDeep AI reviews: ${selected.length}\nDirectional signals: ${signalsFound}\nPositions opened: ${tradesExecuted}\nElapsed: ${elapsedSeconds}s\n${new Date().toISOString()}`,
       { parse_mode: false }
     );
 
@@ -2007,7 +2013,7 @@ PAIRS.forEach(pair => {
 🤖 AI ANALYSIS - ${pair} (${tf})
 
 Signal: ${result?.action || 'HOLD'} (${result?.confidence || 0}%)
-${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}${ultraReasoningText(result)}
+${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}
 Entry: $${result?.entryPrice?.toFixed(2) || 'N/A'}
 SL: $${result?.stopLoss?.toFixed(2) || 'N/A'}
 TP: $${result?.takeProfit?.toFixed(2) || 'N/A'}
@@ -2044,13 +2050,13 @@ bot.action('view_orders', async (ctx) => {
 });
 
 bot.action('action_buy', async (ctx) => {
-  await ctx.answerCbQuery('Direct manual orders are disabled in V13');
-  await ctx.reply('V13.3 safety gate: the final AI selects 4x, 5x, 10x or 100x, and the hard risk engine may downgrade it. Use “Run AI approval” or /signal.');
+  await ctx.answerCbQuery('Direct manual orders are disabled in V16');
+  await ctx.reply('V16 safety gate: the final AI selects only 1x, 2x, 3x or 5x, and the hard risk engine may downgrade it. Use “Run AI approval” or /signal.');
 });
 
 bot.action('action_sell', async (ctx) => {
-  await ctx.answerCbQuery('Direct manual orders are disabled in V13');
-  await ctx.reply('V13.3 safety gate: the final AI selects 4x, 5x, 10x or 100x, and the hard risk engine may downgrade it. Use “Run AI approval” or /signal.');
+  await ctx.answerCbQuery('Direct manual orders are disabled in V16');
+  await ctx.reply('V16 safety gate: the final AI selects only 1x, 2x, 3x or 5x, and the hard risk engine may downgrade it. Use “Run AI approval” or /signal.');
 });
 
 bot.action('action_ai_approval', async (ctx) => {
@@ -2075,25 +2081,54 @@ bot.action('action_full_analysis', async (ctx) => {
 
 // ==================== SCHEDULED TASKS ====================
 
-cron.schedule('0 * * * *', async () => {
-  logger.action('SCHEDULED_VERIFY', {});
-  await orderManager.verifyOpenPositions();
-});
+const maintenanceJobs = [];
 
-cron.schedule('0 0 * * *', async () => {
-  logger.action('DAILY_REPORT', {});
-  const stats = db.getStats();
-  const balance = await bybit.getBalance();
-  
-  db.saveDailyPerformance({
-    date: new Date().toISOString().split('T')[0],
-    balance: balance.totalUSD,
-    totalPnl: stats.totalPnl,
-    winRate: stats.winRate,
-    trades: stats.totalTrades,
-    maxDrawdown: 0
-  });
-});
+function scheduleMaintenanceJobs() {
+  if (maintenanceJobs.length) return maintenanceJobs;
+
+  maintenanceJobs.push(cron.schedule('0 * * * *', async () => {
+    try {
+      logger.action('SCHEDULED_VERIFY', { executionMode: config.app.executionMode });
+      if (config.app.executionMode === 'live') await orderManager.verifyOpenPositions();
+      else await paperBroker.syncPositions();
+      await ultimateAI.syncDailyPnl({ force: true });
+    } catch (error) {
+      logger.error('SCHEDULED_VERIFY', error);
+    }
+  }, { timezone: config.app.timezone }));
+
+  maintenanceJobs.push(cron.schedule('0 0 * * *', async () => {
+    try {
+      logger.action('DAILY_REPORT', { executionMode: config.app.executionMode });
+      await ultimateAI.syncDailyPnl({ force: true });
+      const stats = db.getStats();
+      const balance = await tradingAccount.getBalance();
+      const risk = riskManager.getStatus();
+      const weeklyPeak = finiteNumber(risk.weekPeakEquity);
+      const current = finiteNumber(balance.totalUSD);
+      const maxDrawdown = weeklyPeak > 0 ? Math.max(0, (weeklyPeak - current) / weeklyPeak * 100) : 0;
+
+      db.saveDailyPerformance({
+        date: riskManager.dateKey(),
+        balance: current,
+        totalPnl: finiteNumber(risk.dailyNetPnl, stats.totalPnl),
+        winRate: stats.winRate,
+        trades: finiteNumber(risk.closedTradesToday, stats.totalTrades),
+        maxDrawdown
+      });
+    } catch (error) {
+      logger.error('DAILY_REPORT', error);
+    }
+  }, { timezone: config.app.timezone }));
+
+  return maintenanceJobs;
+}
+
+function stopMaintenanceJobs() {
+  for (const job of maintenanceJobs.splice(0)) {
+    try { job.stop(); } catch (_) {}
+  }
+}
 
 // ==================== LAUNCH ====================
 
@@ -2117,26 +2152,43 @@ bot.catch(async (error, ctx) => {
 
 async function launchBot() {
   try {
+    const startupDiagnostic = runStartupDiagnostics({ throwOnError: true });
+    logger.action('V16_STARTUP_DIAGNOSTICS', startupDiagnostic);
+    connectBybitIfConfigured();
+    scheduleMaintenanceJobs();
     await bot.telegram.setMyCommands(telegramCommands);
     await bot.launch();
 
     // connect() performs its authentication test asynchronously. Wait for it
     // before printing startup status so a valid account is not labeled Mock.
-    if (bybit.waitForConnection) {
+    if (config.app.executionMode === 'live' && bybit.waitForConnection) {
       await bybit.waitForConnection();
     }
 
-    console.log('🚀 ULTRA AI TRADING BOT v13.6 STARTED');
-    console.log(`🏦 Bybit: ${bybit.isConnected ? '✅ Connected' : '❌ Disconnected'}`);
-    if (!bybit.isConnected && bybit.connectionError) {
-      console.log(`   Error: ${bybit.connectionError}`);
+    console.log(`AI TRADER ${config.app.version} STARTED (${config.app.executionMode.toUpperCase()})`);
+    if (config.app.executionMode === 'live') {
+      console.log(`🏦 Bybit: ${bybit.isConnected ? '✅ Connected' : '❌ Disconnected'}`);
+      if (!bybit.isConnected && bybit.connectionError) console.log(`   Error: ${bybit.connectionError}`);
+      console.log(`🔑 Mode: ${bybit.getMode ? bybit.getMode().toUpperCase() : 'RW'}`);
+    } else {
+      console.log('🧪 Account: persistent paper broker (no real orders)');
     }
-    console.log(`🔑 Mode: ${bybit.getMode ? bybit.getMode().toUpperCase() : 'RO'}`);
     console.log(`⏱️ Telegram timeout: ${Math.round(TELEGRAM_HANDLER_TIMEOUT / 1000)}s`);
     await ultimateAI.syncDailyPnl({ force: true });
     console.log(`🎯 Daily target: ${dailyTargetSummary()}`);
     console.log(`🏁 Balance target: ${targetLabel()}`);
     console.log(`Monitoring ${AUTO_TRADE_COINS.length} coins; deep AI budget ${marketScanner.maxAIAnalyses} candidates/sweep`);
+    if (config.scanner.autoStart) {
+      if (!process.env.CHAT_ID) {
+        logger.warn('AUTO_START_SKIPPED', { reason: 'CHAT_ID is required for autonomous notifications' });
+      } else if (config.app.executionMode === 'live' && !bybit.isConnected) {
+        logger.warn('AUTO_START_SKIPPED', { reason: 'Live Bybit connection is unavailable' });
+      } else {
+        isAutoTrading = true;
+        runAutoTradeLoop(createBackgroundContext(process.env.CHAT_ID), 'startup');
+        logger.action('AUTO_START_ENABLED', { executionMode: config.app.executionMode });
+      }
+    }
   } catch (error) {
     logger.error('BOT_LAUNCH', error);
     console.error(`❌ Bot launch failed: ${error.message}`);
@@ -2144,15 +2196,30 @@ async function launchBot() {
   }
 }
 
-launchBot();
+function installShutdownHandlers() {
+  const shutdown = signal => {
+    try { bot.stop(signal); } catch (_) {}
+    stopMaintenanceJobs();
+    clearInterval(patternCleanupInterval);
+    if (autoTradeInterval) clearTimeout(autoTradeInterval);
+  };
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+}
 
-process.once('SIGINT', () => {
-  bot.stop('SIGINT');
-  if (autoTradeInterval) clearInterval(autoTradeInterval);
-});
-process.once('SIGTERM', () => {
-  bot.stop('SIGTERM');
-  if (autoTradeInterval) clearInterval(autoTradeInterval);
-});
+if (require.main === module) {
+  installShutdownHandlers();
+  launchBot();
+}
 
-module.exports = bot;
+module.exports = {
+  bot,
+  launchBot,
+  scheduleMaintenanceJobs,
+  stopMaintenanceJobs,
+  connectBybitIfConfigured,
+  installShutdownHandlers,
+  runFullMarketScan,
+  tradingAccount
+};
+
