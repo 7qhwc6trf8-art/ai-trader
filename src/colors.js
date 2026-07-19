@@ -46,77 +46,77 @@ const colors = {
 // Icons (no emojis)
 const icons = {
   // Trading
-  BUY: 'â–²',
-  SELL: 'â–¼',
-  HOLD: 'â—†',
-  WAIT: 'â—‡',
+  BUY: '▲',
+  SELL: '▼',
+  HOLD: '◆',
+  WAIT: '◇',
   
   // Status
-  SUCCESS: 'âœ”',
-  ERROR: 'âœ–',
-  WARNING: 'âš ï¸',
-  INFO: 'â„¹',
+  SUCCESS: '✔',
+  ERROR: '✖',
+  WARNING: '⚠️',
+  INFO: 'ℹ',
   
   // Arrows
-  UP: 'â†‘',
-  DOWN: 'â†“',
-  RIGHT: 'â†’',
-  LEFT: 'â†',
+  UP: '↑',
+  DOWN: '↓',
+  RIGHT: '→',
+  LEFT: '←',
   
   // Stars
-  STAR: 'â˜…',
-  STAR_EMPTY: 'â˜†',
+  STAR: '★',
+  STAR_EMPTY: '☆',
   
   // Misc
-  CIRCLE: 'â—',
-  CIRCLE_EMPTY: 'â—‹',
-  SQUARE: 'â– ',
-  SQUARE_EMPTY: 'â–¡',
-  DIAMOND: 'â—†',
-  DIAMOND_EMPTY: 'â—‡',
+  CIRCLE: '●',
+  CIRCLE_EMPTY: '○',
+  SQUARE: '■',
+  SQUARE_EMPTY: '□',
+  DIAMOND: '◆',
+  DIAMOND_EMPTY: '◇',
   
   // Lines
-  LINE: 'â”€',
-  LINE_VERTICAL: 'â”‚',
-  LINE_CROSS: 'â”¼',
-  LINE_TOP: 'â”¬',
-  LINE_BOTTOM: 'â”´',
-  LINE_LEFT: 'â”œ',
-  LINE_RIGHT: 'â”¤',
+  LINE: '─',
+  LINE_VERTICAL: '│',
+  LINE_CROSS: '┼',
+  LINE_TOP: '┬',
+  LINE_BOTTOM: '┴',
+  LINE_LEFT: '├',
+  LINE_RIGHT: '┤',
   
   // Corners
-  CORNER_TL: 'â”Œ',
-  CORNER_TR: 'â”',
-  CORNER_BL: 'â””',
-  CORNER_BR: 'â”˜',
+  CORNER_TL: '┌',
+  CORNER_TR: '┐',
+  CORNER_BL: '└',
+  CORNER_BR: '┘',
   
   // Bullets
-  BULLET: 'â€¢',
-  BULLET_HOLLOW: 'â—¦',
-  BULLET_SQUARE: 'â–ª',
+  BULLET: '•',
+  BULLET_HOLLOW: '◦',
+  BULLET_SQUARE: '▪',
   
   // Currency
   USD: '$',
-  BTC: 'â‚¿',
-  ETH: 'âŸ ',
+  BTC: '₿',
+  ETH: '⟠',
   
   // Time
-  CLOCK: 'â±ï¸',
-  CALENDAR: 'ðŸ“…',
+  CLOCK: '⏱️',
+  CALENDAR: '📅',
   
   // Charts
-  CHART_UP: 'ðŸ“ˆ',
-  CHART_DOWN: 'ðŸ“‰',
-  CHART: 'ðŸ“Š',
+  CHART_UP: '📈',
+  CHART_DOWN: '📉',
+  CHART: '📊',
   
   // Misc
-  GEAR: 'âš™',
-  LOCK: 'ðŸ”’',
-  UNLOCK: 'ðŸ”“',
-  CHECK: 'âœ…',
-  CROSS: 'âŒ',
-  WARNING_SIGN: 'âš ï¸',
-  INFO_SIGN: 'â„¹ï¸'
+  GEAR: '⚙',
+  LOCK: '🔒',
+  UNLOCK: '🔓',
+  CHECK: '✅',
+  CROSS: '❌',
+  WARNING_SIGN: '⚠️',
+  INFO_SIGN: 'ℹ️'
 };
 
 function colorize(text, color, style = '') {
@@ -150,7 +150,7 @@ function dim(text) {
 function box(text, color = colors.brightCyan) {
   const lines = text.split('\n');
   const maxLen = Math.max(...lines.map(l => l.length));
-  const border = 'â”€'.repeat(maxLen + 4);
+  const border = '─'.repeat(maxLen + 4);
   const result = [
     `${color}${icons.CORNER_TL}${border}${icons.CORNER_TR}${colors.reset}`,
     ...lines.map(l => `${color}${icons.LINE_VERTICAL} ${l}${' '.repeat(maxLen - l.length)} ${icons.LINE_VERTICAL}${colors.reset}`),

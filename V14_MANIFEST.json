@@ -1,0 +1,217 @@
+{
+  "version": "14.1-utf8-fixed",
+  "encoding": "UTF-8 without BOM",
+  "repairSummary": "Decoded mojibake across source files and preserved legacy-input detection using Unicode escapes.",
+  "files": [
+    {
+      "path": ".env.v14.example",
+      "bytes": 835,
+      "sha256": "09bef12a6317d33f08e87fa1a9e2d9bdf3cb05f68ad5a2961e9b90b2b2332739"
+    },
+    {
+      "path": "UTF8_FIX_README.md",
+      "bytes": 700,
+      "sha256": "30b27a2fd3fadfb66b48c147e689c1fb2ec92f98c15a79579e61c9a9c78407c7"
+    },
+    {
+      "path": "V14_CHANGELOG.md",
+      "bytes": 930,
+      "sha256": "a84c2fe39497fdd236231004b4db71ac30fc7dd22acbba91c641b7703e8ed65d"
+    },
+    {
+      "path": "V14_README.md",
+      "bytes": 2797,
+      "sha256": "c3fddf7b3bdacbee2f7465af2aef9ad598918558bcd6b6a34f10f21121766cf8"
+    },
+    {
+      "path": "src/ai.js",
+      "bytes": 239,
+      "sha256": "9023b70ddc54d92c620d836f53865713366981bba71c7b75b054907b78ddadc0"
+    },
+    {
+      "path": "src/ai_analyzer.js",
+      "bytes": 1540,
+      "sha256": "5c650dcea579cbde2526191c4d26d1b2c6229ee90e78b78b1fd32a22600aa12c"
+    },
+    {
+      "path": "src/ai_trader.js",
+      "bytes": 2762,
+      "sha256": "9856d0c5ced250989cea8079c6f25d594f7f19904d614336bde0d11e16399b75"
+    },
+    {
+      "path": "src/ai_trader_advanced.js",
+      "bytes": 113,
+      "sha256": "6d6d69990c127f4e297b3612651b651275047d2c0e7552a283100a2b75c01de3"
+    },
+    {
+      "path": "src/ai_validator.js",
+      "bytes": 9583,
+      "sha256": "397ff39fc051f40e2714fa65daf83b417497ef81061b95ebb1353dfb8b31ac78"
+    },
+    {
+      "path": "src/analyzer.js",
+      "bytes": 4592,
+      "sha256": "8c2a8d2b341f39daa4612d616eba5eaba2e60d75b5a9865ff8ff08637e7564d4"
+    },
+    {
+      "path": "src/backtest.js",
+      "bytes": 5434,
+      "sha256": "d26858f02efca8032928f10c9a5e3002e36a29c37f6fd917d6d4e182019efb2a"
+    },
+    {
+      "path": "src/bot.js",
+      "bytes": 79678,
+      "sha256": "62449710283daae525c15e08eb8ef6efcc40488c1c2acdbf0a465d7fa9cfe48c"
+    },
+    {
+      "path": "src/bybit_client.js",
+      "bytes": 31700,
+      "sha256": "0328466da63beaa450edaa83e6f9c2c7a66b4ab8eab50825930e54fbcd6979b0"
+    },
+    {
+      "path": "src/chart_generator.js",
+      "bytes": 27155,
+      "sha256": "151acf802aa1ae7213d64a4cd80b2a9057e57ec590e55579d6bbc033950c46ba"
+    },
+    {
+      "path": "src/coin_universe.js",
+      "bytes": 1819,
+      "sha256": "d2f10244e7d54811238f88670ada0048bb8109a64d3e6583c92a6b52e1025aa2"
+    },
+    {
+      "path": "src/colors.js",
+      "bytes": 4229,
+      "sha256": "8dcb077672ae85e28382c7b1ecdf1124d21cdaf94279a2f2adec1d9b9e391fc8"
+    },
+    {
+      "path": "src/core/config.js",
+      "bytes": 1016,
+      "sha256": "3d645f9ec0adb7e6750e4e62f7f24ff4a6bafbdc081d2c05cc62acf1288ae2bb"
+    },
+    {
+      "path": "src/core/index.js",
+      "bytes": 98,
+      "sha256": "715395fe3be1dfa7f35524195be0012aa13be846f1a22797d4df273577072ede"
+    },
+    {
+      "path": "src/core/logger.js",
+      "bytes": 54,
+      "sha256": "3f492dc77d76bf09ec0d27b9821debbad816bdc82a6c50df53074575df8c79fc"
+    },
+    {
+      "path": "src/database.js",
+      "bytes": 14639,
+      "sha256": "5326abaed576aa26dc261690220b3d0126b8c1bdcc2bceb4c6aab7c934f169d3"
+    },
+    {
+      "path": "src/deepseek_api.js",
+      "bytes": 4401,
+      "sha256": "79aadee813b1a360302a71fc088b0b8421d2941da5c9ba3241b48fe1e754b826"
+    },
+    {
+      "path": "src/forecast_chart_generator.js",
+      "bytes": 9485,
+      "sha256": "1108638f44c95b62c88c5fffed344bdcf381da1110fd20e5ccca2eb5668623e5"
+    },
+    {
+      "path": "src/forecast_engine.js",
+      "bytes": 10996,
+      "sha256": "99c9e9b6c7fdb3df5fcdfcdab776e24d72758ebf7c414ef3a905f4db61cfd14d"
+    },
+    {
+      "path": "src/indicators.js",
+      "bytes": 1881,
+      "sha256": "3c2c3c46ca7a0ba2c4f756c2ba9de54ccd1fce2700087ae7fbf7a3f826c3c34d"
+    },
+    {
+      "path": "src/logger.js",
+      "bytes": 25858,
+      "sha256": "1a169a752c6a1343dd11b5255fa1281e43b98855f45a7be469e24c220d6bd869"
+    },
+    {
+      "path": "src/market.js",
+      "bytes": 5321,
+      "sha256": "998520bcf140c63739feea82849cafceaecb815bf99cbaeb093bfd82795bdd63"
+    },
+    {
+      "path": "src/market_scanner.js",
+      "bytes": 2658,
+      "sha256": "c84d8c4d4191bb93154e211377f63f3ed72be0938612abf25139bd825a4a4e32"
+    },
+    {
+      "path": "src/money_manager.js",
+      "bytes": 16386,
+      "sha256": "4ca8bdc3968c96a10b5c6b138165299247f5ffe67421101d2dfb7d22f8522c62"
+    },
+    {
+      "path": "src/order_manager.js",
+      "bytes": 17934,
+      "sha256": "6d60591087f57366ab6a5eddf867ca016018403b532816d2e69b3c3cd8aec13d"
+    },
+    {
+      "path": "src/pattern_detector.js",
+      "bytes": 30133,
+      "sha256": "4faef294b217b9f73081b75eb3c4745ad2ce04daa8cad75697c80cb99a843171"
+    },
+    {
+      "path": "src/pattern_visualizer.js",
+      "bytes": 39755,
+      "sha256": "f87321549148a56f6faec78bd303f29f7ce0466a7fa554dbc6c2edcebbc51d76"
+    },
+    {
+      "path": "src/risk_manager.js",
+      "bytes": 5539,
+      "sha256": "85f3c78dba9df65f96127be370e8dfc03206830691935c6729366937ee80339a"
+    },
+    {
+      "path": "src/technical_tools.js",
+      "bytes": 2917,
+      "sha256": "960e0fd3d5092574e88c50c3d9360d5192fa34b78cf9d63c3d1287b004307e46"
+    },
+    {
+      "path": "src/ultimate_ai_trader.js",
+      "bytes": 117730,
+      "sha256": "581cc5f78dacef050d3187d3ac1a5492ed0172f4109c714bf2deae3968d28b35"
+    },
+    {
+      "path": "src/ultra_ai_reasoning.js",
+      "bytes": 29879,
+      "sha256": "debaddc97975cde7700aac4639a954146c70e02ec590baa5ae6e69130599c996"
+    },
+    {
+      "path": "src/ultra_logger.js",
+      "bytes": 53,
+      "sha256": "635c8e4f416a315c80d103a450ea530006cb374eb131010a408324c4ecb77a9b"
+    },
+    {
+      "path": "src/websocket.js",
+      "bytes": 3020,
+      "sha256": "9f7f6fbc60a894ba8db56af75e97c52e653382e847dca2f9b2261e9abde9487f"
+    },
+    {
+      "path": "src/websocket_auto_trader.js",
+      "bytes": 10526,
+      "sha256": "a1358e0bcc2d166bd4491e52f715fc5afa24e9d7f48aa25e23a9134a618bd193"
+    },
+    {
+      "path": "src/websocket_manager.js",
+      "bytes": 9061,
+      "sha256": "c30ce7fd8309ae594575edab88cdce148ab124790e3da3f778b714654de4ad4a"
+    },
+    {
+      "path": "tools/repair-utf8.js",
+      "bytes": 1456,
+      "sha256": "4229a3eefa8f97a9acde17018912a580d4b9dab9ad096b3d610401a6a662fd7b"
+    },
+    {
+      "path": "ultimate_ai_integration_self_test.js",
+      "bytes": 5630,
+      "sha256": "da341c1e92dbe14eacf2b5a92267c1f88084ec0ee887d023ef67651e43327585"
+    },
+    {
+      "path": "ultra_ai_self_test.js",
+      "bytes": 3843,
+      "sha256": "2c9f01da001a865c508dbd10b8a5ac8d99db6be17aa16c0e0d45e854a4001adc"
+    }
+  ]
+}

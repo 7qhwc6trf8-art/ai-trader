@@ -35,7 +35,7 @@ class RiskManager {
     this.lastResetDate = new Date().toDateString();
   }
 
-  // âœ… NEW: Check daily loss limit
+  // ✅ NEW: Check daily loss limit
   checkDailyLoss(currentLoss) {
     this.resetDailyIfNeeded();
     
@@ -53,7 +53,7 @@ class RiskManager {
     return { passed: true };
   }
 
-  // âœ… NEW: Reset daily counters if new day
+  // ✅ NEW: Reset daily counters if new day
   resetDailyIfNeeded() {
     const today = new Date().toDateString();
     if (today !== this.lastResetDate) {
@@ -64,7 +64,7 @@ class RiskManager {
     }
   }
 
-  // âœ… NEW: Validate trade before execution
+  // ✅ NEW: Validate trade before execution
   validate(signal, portfolio) {
     const checks = [];
     let passed = true;
@@ -120,10 +120,10 @@ class RiskManager {
     
     let size = riskAmount / riskPerUnit;
     
-    // âœ… FIX: Account for fees (0.1%)
+    // ✅ FIX: Account for fees (0.1%)
     size = size * 0.998;
     
-    // âœ… FIX: Reduce size in high volatility (if ATR > 3% of price)
+    // ✅ FIX: Reduce size in high volatility (if ATR > 3% of price)
     // This will be set by the caller
     
     return size;

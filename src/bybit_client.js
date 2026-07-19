@@ -24,8 +24,8 @@ class BybitClient {
       this.apiSecret = apiSecret;
       this.mode = mode;
       
-      console.log(`ðŸ”Œ Connecting to Bybit in ${mode.toUpperCase()} mode...`);
-      console.log(`ðŸ“ API Key: ${apiKey ? apiKey.substring(0, 8) + '...' : 'MISSING'}`);
+      console.log(`🔌 Connecting to Bybit in ${mode.toUpperCase()} mode...`);
+      console.log(`📝 API Key: ${apiKey ? apiKey.substring(0, 8) + '...' : 'MISSING'}`);
       
       const requestedMarketType = String(process.env.BYBIT_MARKET_TYPE || 'swap').toLowerCase();
       this.marketType = ['swap', 'spot'].includes(requestedMarketType)
@@ -52,7 +52,7 @@ class BybitClient {
     } catch (error) {
       this.connectionError = error.message;
       logger.error('Bybit connection failed:', error.message);
-      console.error('âŒ Bybit connection failed:', error.message);
+      console.error('❌ Bybit connection failed:', error.message);
       console.error('   Please check your API keys and permissions.');
       return false;
     }
@@ -60,18 +60,18 @@ class BybitClient {
 
   async testConnection() {
     try {
-      console.log('ðŸ” Testing Bybit connection...');
+      console.log('🔍 Testing Bybit connection...');
       await this.exchange.loadMarkets();
       const balance = await this.exchange.fetchBalance({ type: this.marketType });
       const usdtBalance = this.toFiniteNumber(balance?.total?.USDT);
-      console.log('âœ… Bybit connection successful!');
-      console.log(`ðŸ’° Unified/Trading USDT wallet balance: ${usdtBalance}`);
+      console.log('✅ Bybit connection successful!');
+      console.log(`💰 Unified/Trading USDT wallet balance: ${usdtBalance}`);
       this.isConnected = true;
       this.connectionError = null;
 
       return true;
     } catch (error) {
-      console.error('âŒ Connection test failed:', error.message);
+      console.error('❌ Connection test failed:', error.message);
       console.error('   Make sure your API keys are correct and have proper permissions');
       this.isConnected = false;
       this.connectionError = error.message;
@@ -324,7 +324,7 @@ class BybitClient {
     }
 
     if (!this.exchange || !this.apiKey || !this.apiSecret) {
-      console.log('âš ï¸ Bybit API keys are missing - live balance unavailable');
+      console.log('⚠️ Bybit API keys are missing - live balance unavailable');
       return this.unavailableBalance('The configured Bybit API key/secret is missing');
     }
 
@@ -338,7 +338,7 @@ class BybitClient {
     }
 
     try {
-      console.log('ðŸ” Fetching Unified/Trading and Funding balances from Bybit...');
+      console.log('🔍 Fetching Unified/Trading and Funding balances from Bybit...');
       const tradingBalance = await this.exchange.fetchBalance({ type: this.marketType });
       let fundingBalance = null;
       let fundingError = null;
@@ -363,7 +363,7 @@ class BybitClient {
       
       logger.balance(this.cachedBalance, this.mode);
       console.log(
-        `âœ… Unified equity: $${this.cachedBalance.totalUSD.toFixed(2)} | ` +
+        `✅ Unified equity: $${this.cachedBalance.totalUSD.toFixed(2)} | ` +
         `Tradable: $${this.cachedBalance.tradableUSD.toFixed(2)} | ` +
         `Funding USDT: $${this.cachedBalance.fundingUSDT.toFixed(2)}`
       );
@@ -371,12 +371,12 @@ class BybitClient {
       
     } catch (error) {
       logger.error('Balance fetch error:', error);
-      console.error('âŒ Balance fetch error:', error.message);
+      console.error('❌ Balance fetch error:', error.message);
       
       // A real-money bot must fail closed. Never place an order using a stale
       // or fabricated balance after a live balance request fails.
       if (this.mode !== 'rw' && this.cachedBalance) {
-        console.log('âš ï¸ Using cached balance');
+        console.log('⚠️ Using cached balance');
         return { ...this.cachedBalance, stale: true, error: error.message };
       }
 
@@ -955,7 +955,7 @@ class BybitClient {
   }
 
   getMockBalance() {
-    console.log('âš ï¸ USING MOCK BALANCE - Check your API keys!');
+    console.log('⚠️ USING MOCK BALANCE - Check your API keys!');
     return {
       totalUSD: 15.00,
       tradableUSD: 15.00,

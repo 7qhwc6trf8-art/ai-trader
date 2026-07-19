@@ -58,7 +58,7 @@ class ChartGenerator {
 
         ctx.fillStyle = '#6a7a8a';
         ctx.font = '14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        ctx.fillText(`1h Â· ${new Date().toISOString().split('T')[0]}`, 290, 42);
+        ctx.fillText(`1h · ${new Date().toISOString().split('T')[0]}`, 290, 42);
 
         const price = closes[closes.length - 1] || 0;
         ctx.fillStyle = '#eaecef';
@@ -198,10 +198,10 @@ class ChartGenerator {
                 ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
                 ctx.textAlign = 'center';
                 const names = patterns.slice(0, 3).map(p => p.name).join(' + ');
-                ctx.fillText(`âš¡ ${names}`, x + candleWidth / 2, labelY - 15);
+                ctx.fillText(`⚡ ${names}`, x + candleWidth / 2, labelY - 15);
                 ctx.fillStyle = '#4fc3f7';
                 ctx.font = '16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-                ctx.fillText('â–¼', x + candleWidth / 2, labelY + 5);
+                ctx.fillText('▼', x + candleWidth / 2, labelY + 5);
             }
         }
 
@@ -537,7 +537,7 @@ class ChartGenerator {
             ctx.fillStyle = color;
             ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
             ctx.textAlign = 'left';
-            ctx.fillText(`Fib ${level.ratio.toFixed(3)} Â· $${Number(level.price).toFixed(4)}`, this.padding.left + 8, py - 6);
+            ctx.fillText(`Fib ${level.ratio.toFixed(3)} · $${Number(level.price).toFixed(4)}`, this.padding.left + 8, py - 6);
         });
     }
 
@@ -618,7 +618,7 @@ class ChartGenerator {
         let y = boxY + 55;
         patterns.slice(0, 6).forEach((p) => {
             const color = p.type === 'BULLISH' ? '#22c55e' : p.type === 'BEARISH' ? '#ef5350' : '#f5a623';
-            const emoji = p.type === 'BULLISH' ? 'ðŸŸ¢' : p.type === 'BEARISH' ? 'ðŸ”´' : 'ðŸŸ¡';
+            const emoji = p.type === 'BULLISH' ? '🟢' : p.type === 'BEARISH' ? '🔴' : '🟡';
 
             ctx.fillStyle = color;
             ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';

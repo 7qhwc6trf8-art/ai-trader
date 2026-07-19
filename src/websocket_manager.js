@@ -32,7 +32,7 @@ class WebSocketManager extends EventEmitter {
       this.ws.on('open', () => {
         this.isConnected = true;
         this.reconnectAttempts = 0;
-        logger.action('ðŸ”— WebSocket connected');
+        logger.action('🔗 WebSocket connected');
         this.emit('connected');
         this.startHeartbeat();
         this.resubscribeAll();
@@ -80,9 +80,9 @@ class WebSocketManager extends EventEmitter {
       // Handle subscription response
       if (message.type === 'response') {
         if (message.success) {
-          logger.action(`âœ… Subscribed to: ${message.req_id}`);
+          logger.action(`✅ Subscribed to: ${message.req_id}`);
         } else {
-          logger.error(`âŒ Subscription failed: ${message.ret_msg}`);
+          logger.error(`❌ Subscription failed: ${message.ret_msg}`);
         }
         this.emit('subscribed', message);
         return;
@@ -164,7 +164,7 @@ class WebSocketManager extends EventEmitter {
         req_id: `sub_${Date.now()}`
       };
       this.ws.send(JSON.stringify(message));
-      logger.action(`ðŸ“¡ Subscribing to: ${topic}`);
+      logger.action(`📡 Subscribing to: ${topic}`);
     }
   }
 
