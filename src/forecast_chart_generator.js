@@ -81,7 +81,7 @@ class ForecastChartGenerator {
     ctx.fillText(`${coin}/USDT future graph`, margin.left, 50);
     ctx.fillStyle = '#9fb2ca';
     ctx.font = '19px sans-serif';
-    ctx.fillText(`${forecast.timeframe} candles · ${forecast.horizonLabel} horizon · ${forecast.direction} bias`, margin.left, 80);
+    ctx.fillText(`${forecast.timeframe} candles Â· ${forecast.horizonLabel} horizon Â· ${forecast.direction} bias`, margin.left, 80);
 
     // Grid
     ctx.strokeStyle = 'rgba(159, 178, 202, 0.16)';
@@ -113,7 +113,7 @@ class ForecastChartGenerator {
         ctx.setLineDash([]);
         ctx.fillStyle = highlight ? '#fbbf24' : '#94a3b8';
         ctx.font = '12px sans-serif';
-        ctx.fillText(`Fib ${Number(level.ratio).toFixed(3)} · ${priceLabel(level.price)}`, width - margin.right - 220, py - 8);
+        ctx.fillText(`Fib ${Number(level.ratio).toFixed(3)} Â· ${priceLabel(level.price)}`, width - margin.right - 220, py - 8);
       });
     }
 
@@ -216,12 +216,12 @@ class ForecastChartGenerator {
     ctx.stroke();
     ctx.fillStyle = '#d8e3f0';
     ctx.font = 'bold 16px sans-serif';
-    ctx.fillText('FORECAST ZONE →', dividerX + 10, margin.top + 25);
+    ctx.fillText('FORECAST ZONE â†’', dividerX + 10, margin.top + 25);
 
     // Legend cards
     const cards = [
       `Expected: ${priceLabel(forecast.expectedPrice)} (${forecast.expectedReturnPct >= 0 ? '+' : ''}${forecast.expectedReturnPct.toFixed(2)}%)`,
-      `80% scenario band: ${priceLabel(forecast.lowerPrice)} – ${priceLabel(forecast.upperPrice)}`,
+      `80% scenario band: ${priceLabel(forecast.lowerPrice)} â€“ ${priceLabel(forecast.upperPrice)}`,
       `Probability up/down: ${forecast.upProbabilityPct.toFixed(1)}% / ${forecast.downProbabilityPct.toFixed(1)}%`
     ];
     ctx.fillStyle = 'rgba(15, 23, 42, 0.68)';

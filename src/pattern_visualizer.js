@@ -483,7 +483,7 @@ class PatternVisualizer {
                 zctx.fillStyle = '#4fc3f7';
                 zctx.font = 'bold 26px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
                 zctx.textAlign = 'left';
-                zctx.fillText(`🔍 ${pattern.name || 'Pattern'} — ${coin}/USDT`, 18, 36);
+                zctx.fillText(`ðŸ” ${pattern.name || 'Pattern'} â€” ${coin}/USDT`, 18, 36);
 
                 const buffer = zoomCanvas.toBuffer('image/png');
                 const filename = `${coin}_zoom_${index}_${Date.now()}.png`;

@@ -67,11 +67,11 @@ function aiProviderLabel() {
   const name = ai.provider === 'claude'
     ? 'Claude'
     : ai.provider === 'ensemble'
-      ? 'Claude × DeepSeek Ensemble'
+      ? 'Claude Ã— DeepSeek Ensemble'
     : ai.provider === 'deepseek'
       ? 'DeepSeek'
       : 'Claude + DeepSeek';
-  return `${name} · ${ai.model}`;
+  return `${name} Â· ${ai.model}`;
 }
 
 function finiteNumber(value, fallback = 0) {
@@ -107,11 +107,11 @@ function aiConsensusSummary(result) {
   if (!review) return `AI: ${aiProviderLabel()}`;
 
   const vote = item => {
-    if (item?.error) return `❌ ${compactText(item.error, 90)}`;
+    if (item?.error) return `âŒ ${compactText(item.error, 90)}`;
     if (item?.action) return `${item.action} ${finiteNumber(item.confidence)}%`;
     return 'Not configured';
   };
-  return `Claude: ${vote(review.claude)} · DeepSeek: ${vote(review.deepseek)} · Final: ${vote(review.final)}`;
+  return `Claude: ${vote(review.claude)} Â· DeepSeek: ${vote(review.deepseek)} Â· Final: ${vote(review.final)}`;
 }
 
 function officialNewsContext() {
@@ -126,7 +126,7 @@ function executionStatusText(result) {
       result.executionResult?.order?.id || result.executionResult?.trade?.orderId || '',
       80
     );
-    return `\n✅ *Execution:* POSITION OPENED${orderId ? ` · Order ${orderId}` : ''}`;
+    return `\nâœ… *Execution:* POSITION OPENED${orderId ? ` Â· Order ${orderId}` : ''}`;
   }
 
   const reason = compactText(
@@ -137,7 +137,7 @@ function executionStatusText(result) {
     320
   );
   const label = result.executionBlocked ? 'BLOCKED' : 'FAILED / NOT CONFIRMED';
-  return `\n⛔ *Execution:* ${label} — ${reason}`;
+  return `\nâ›” *Execution:* ${label} â€” ${reason}`;
 }
 
 
@@ -146,12 +146,12 @@ function leverageApprovalText(result) {
   const requested = finiteNumber(result.leverageApproval?.requestedLeverage || result.recommendedLeverage || result.approvedLeverage);
   if (result.leverageApproved && result.leverage > 0) {
     const downgrade = requested > 0 && requested !== result.leverage
-      ? ` · downgraded from ${requested}x by hard risk gate`
+      ? ` Â· downgraded from ${requested}x by hard risk gate`
       : '';
     return `\n*AI leverage:* ${result.leverage}x APPROVED${downgrade}`;
   }
   const reason = compactText(result.leverageApproval?.reason || result.leverageReason || 'Not approved', 260);
-  return `\n*AI leverage:* REJECTED — ${reason}`;
+  return `\n*AI leverage:* REJECTED â€” ${reason}`;
 }
 
 function forecastProjectionText(result) {
@@ -159,8 +159,8 @@ function forecastProjectionText(result) {
   const projection = result?.tradeProjection;
   let text = '';
   if (forecast?.available) {
-    text += `\n*Rough forecast:* ${forecast.direction || 'NEUTRAL'} · ${finiteNumber(forecast.expectedReturnPct).toFixed(2)}% expected over ${forecast.horizonLabel || 'configured horizon'}`;
-    text += `\n*Scenario range:* $${finiteNumber(forecast.lowerPrice).toFixed(4)} — $${finiteNumber(forecast.upperPrice).toFixed(4)}`;
+    text += `\n*Rough forecast:* ${forecast.direction || 'NEUTRAL'} Â· ${finiteNumber(forecast.expectedReturnPct).toFixed(2)}% expected over ${forecast.horizonLabel || 'configured horizon'}`;
+    text += `\n*Scenario range:* $${finiteNumber(forecast.lowerPrice).toFixed(4)} â€” $${finiteNumber(forecast.upperPrice).toFixed(4)}`;
   }
   if (projection?.available) {
     text += `\n*TP probability:* ${finiteNumber(projection.tpReachProbabilityPct).toFixed(1)}%`;
@@ -177,7 +177,37 @@ function moneyManagementText(result) {
   const plan = result?.moneyManagement;
   if (!plan) return '';
   return `\n*Risk budget:* ${finiteNumber(plan.riskPercent).toFixed(2)}% ($${finiteNumber(plan.riskAmount).toFixed(4)})` +
-    `\n*Position size:* ${finiteNumber(result.positionSize).toFixed(8)} · ${finiteNumber(plan.marginPercent).toFixed(1)}% account margin`;
+    `\n*Position size:* ${finiteNumber(result.positionSize).toFixed(8)} Â· ${finiteNumber(plan.marginPercent).toFixed(1)}% account margin`;
+}
+
+
+function ultraReasoningText(result) {
+  const evidence = result?.reasoningEvidence;
+  const calibration = result?.calibration;
+  if (!evidence) return '';
+
+  const score = evidence.score || {};
+  const direction = compactText(score.dominantDirection || 'NEUTRAL', 20);
+  const dataQuality = finiteNumber(evidence.dataQuality);
+  const edge = finiteNumber(score.absoluteEdge);
+  const ceiling = finiteNumber(score.confidenceCeiling);
+  const aligned = finiteNumber(score.alignedTimeframes);
+  const warning = Array.isArray(result?.warnings) && result.warnings.length
+    ? `
+*Main risk:* ${compactText(result.warnings[0], 180)}`
+    : '';
+  const invalidation = result?.invalidation
+    ? `
+*Invalidation:* ${compactText(result.invalidation, 180)}`
+    : '';
+  const calibrationText = calibration
+    ? `
+*Confidence calibration:* ${finiteNumber(calibration.rawConfidence).toFixed(0)}% raw -> ${finiteNumber(calibration.calibratedConfidence, result.confidence).toFixed(0)}% final`
+    : '';
+
+  return `
+*Ultra evidence:* ${direction} edge ${edge.toFixed(1)} · data ${dataQuality.toFixed(0)}% · ${aligned.toFixed(0)} aligned TF · ceiling ${ceiling.toFixed(0)}%` +
+    calibrationText + invalidation + warning;
 }
 
 // ==================== CONNECT BYBIT ====================
@@ -214,17 +244,17 @@ let statusMsgId = null;
 // ==================== KEYBOARDS ====================
 
 const mainKeyboard = Markup.keyboard([
-  ['🧠 AI Engine'],
-  ['📊 Chart', '📈 RSI', '📉 MACD'],
-  ['🔮 Forecast', '🤖 AI Signal', '🧠 Full Analysis'],
-  ['💰 Balance', '💼 Portfolio'],
-  ['📝 Orders', '📌 Positions'],
-  ['📡 Connection', '⏱️ Timeframe'],
-  ['🚀 Start Auto-Trade', '🛑 Stop Auto-Trade'],
-  ['📊 Status', '🏆 Performance'],
-  ['💵 Daily Target'],
-  ['📋 Logs', '🟢 Live Updates'],
-  ['🔴 Stop Live', '❓ Help']
+  ['ðŸ§  AI Engine'],
+  ['ðŸ“Š Chart', 'ðŸ“ˆ RSI', 'ðŸ“‰ MACD'],
+  ['ðŸ”® Forecast', 'ðŸ¤– AI Signal', 'ðŸ§  Full Analysis'],
+  ['ðŸ’° Balance', 'ðŸ’¼ Portfolio'],
+  ['ðŸ“ Orders', 'ðŸ“Œ Positions'],
+  ['ðŸ“¡ Connection', 'â±ï¸ Timeframe'],
+  ['ðŸš€ Start Auto-Trade', 'ðŸ›‘ Stop Auto-Trade'],
+  ['ðŸ“Š Status', 'ðŸ† Performance'],
+  ['ðŸ’µ Daily Target'],
+  ['ðŸ“‹ Logs', 'ðŸŸ¢ Live Updates'],
+  ['ðŸ”´ Stop Live', 'â“ Help']
 ]).resize();
 
 const pairRows = [];
@@ -241,30 +271,30 @@ const timeframeKeyboard = Markup.inlineKeyboard([
 ]);
 
 const balanceKeyboard = Markup.inlineKeyboard([
-  [Markup.button.callback('🔄 Refresh', 'refresh_balance')],
-  [Markup.button.callback('💼 Portfolio', 'view_portfolio'), Markup.button.callback('📝 Orders', 'view_orders')]
+  [Markup.button.callback('ðŸ”„ Refresh', 'refresh_balance')],
+  [Markup.button.callback('ðŸ’¼ Portfolio', 'view_portfolio'), Markup.button.callback('ðŸ“ Orders', 'view_orders')]
 ]);
 
 const actionKeyboard = Markup.inlineKeyboard([
-  [Markup.button.callback('🧠 Run AI approval', 'action_ai_approval'), Markup.button.callback('🔮 Forecast', 'action_forecast')],
-  [Markup.button.callback('🔄 Refresh', 'update_chart'), Markup.button.callback('🧠 Full Analysis', 'action_full_analysis')]
+  [Markup.button.callback('ðŸ§  Run AI approval', 'action_ai_approval'), Markup.button.callback('ðŸ”® Forecast', 'action_forecast')],
+  [Markup.button.callback('ðŸ”„ Refresh', 'update_chart'), Markup.button.callback('ðŸ§  Full Analysis', 'action_full_analysis')]
 ]);
 
 const telegramCommands = [
-  { command: 'start', description: '🏠 Open the main menu' },
-  { command: 'ai', description: '🧠 View the AI engine' },
-  { command: 'signal', description: '🤖 Generate an AI signal' },
-  { command: 'analysis', description: '📊 Run full market analysis' },
-  { command: 'forecast', description: '🔮 Generate rough future chart' },
-  { command: 'coins', description: '🪙 Show the scan universe' },
-  { command: 'balance', description: '💰 View trading balance' },
-  { command: 'portfolio', description: '💼 View portfolio' },
-  { command: 'positions', description: '📌 View open positions' },
-  { command: 'orders', description: '📝 View orders' },
-  { command: 'connection', description: '🔌 Check Bybit and AI APIs' },
-  { command: 'status', description: '📊 View bot status' },
-  { command: 'performance', description: '🏆 View performance' },
-  { command: 'daily', description: '💵 View daily $10 target' }
+  { command: 'start', description: 'ðŸ  Open the main menu' },
+  { command: 'ai', description: 'ðŸ§  View the AI engine' },
+  { command: 'signal', description: 'ðŸ¤– Generate an AI signal' },
+  { command: 'analysis', description: 'ðŸ“Š Run full market analysis' },
+  { command: 'forecast', description: 'ðŸ”® Generate rough future chart' },
+  { command: 'coins', description: 'ðŸª™ Show the scan universe' },
+  { command: 'balance', description: 'ðŸ’° View trading balance' },
+  { command: 'portfolio', description: 'ðŸ’¼ View portfolio' },
+  { command: 'positions', description: 'ðŸ“Œ View open positions' },
+  { command: 'orders', description: 'ðŸ“ View orders' },
+  { command: 'connection', description: 'ðŸ”Œ Check Bybit and AI APIs' },
+  { command: 'status', description: 'ðŸ“Š View bot status' },
+  { command: 'performance', description: 'ðŸ† View performance' },
+  { command: 'daily', description: 'ðŸ’µ View daily $10 target' }
 ];
 
 // ==================== PATTERN ZOOM SESSIONS ====================
@@ -310,7 +340,7 @@ function buildPatternKeyboard(sessionId, patterns, extraRows, zooms = []) {
     let row = [];
     patterns.slice(0, 8).forEach((p, idx) => {
       if (!zoomIndexes.has(idx)) return;
-      row.push(Markup.button.callback(`🔍 ${p.name}`, `zoom_${sessionId}_${idx}`));
+      row.push(Markup.button.callback(`ðŸ” ${p.name}`, `zoom_${sessionId}_${idx}`));
       if (row.length === 2) {
         rows.push(row);
         row = [];
@@ -322,7 +352,7 @@ function buildPatternKeyboard(sessionId, patterns, extraRows, zooms = []) {
 }
 
 function buildBackKeyboard(sessionId, extraRows) {
-  const rows = [...(extraRows || []), [Markup.button.callback('🔙 Back to full chart', `back_${sessionId}`)]];
+  const rows = [...(extraRows || []), [Markup.button.callback('ðŸ”™ Back to full chart', `back_${sessionId}`)]];
   return Markup.inlineKeyboard(rows);
 }
 
@@ -341,7 +371,7 @@ async function sendPatternChart(ctx, coin, data, patterns, decision, chartResult
   const fullCaption = String(caption || '');
   const captionNeedsFollowUp = fullCaption.length > 1000;
   const chartCaption = captionNeedsFollowUp
-    ? `📊 *${coin} AI chart*\n${aiConsensusSummary(decision)}${officialNewsContext(decision, 1)}\n\nFull cited analysis is in the next message.`
+    ? `ðŸ“Š *${coin} AI chart*\n${aiConsensusSummary(decision)}${officialNewsContext(decision, 1)}\n\nFull cited analysis is in the next message.`
     : fullCaption;
   const extraRows = extraKeyboard?.reply_markup?.inline_keyboard || [];
   const sessionId = createPatternSession(coin, data, patterns, decision, chartPath, chartCaption, extraRows, zooms);
@@ -377,7 +407,7 @@ bot.action(/^zoom_(.+)_(\d+)$/, async (ctx) => {
   const session = patternSessions.get(sessionId);
 
   if (!session) {
-    await ctx.answerCbQuery('⌛ This chart expired. Run the analysis again.');
+    await ctx.answerCbQuery('âŒ› This chart expired. Run the analysis again.');
     return;
   }
 
@@ -387,7 +417,7 @@ bot.action(/^zoom_(.+)_(\d+)$/, async (ctx) => {
     return;
   }
 
-  await ctx.answerCbQuery(`🔍 Zooming into ${pattern.name}...`);
+  await ctx.answerCbQuery(`ðŸ” Zooming into ${pattern.name}...`);
 
   try {
     const zoom = session.zooms.find(item => Number(item.index) === patternIndex);
@@ -401,14 +431,14 @@ bot.action(/^zoom_(.+)_(\d+)$/, async (ctx) => {
       {
         type: 'document',
         media: { source: zoomedPath, filename: `${session.coin}_${pattern.name.replace(/\s+/g, '_')}.png` },
-        caption: `🔍 *${pattern.name}* — ${session.coin}\nStrength: ${pattern.strength}% • ${pattern.type}`,
+        caption: `ðŸ” *${pattern.name}* â€” ${session.coin}\nStrength: ${pattern.strength}% â€¢ ${pattern.type}`,
         parse_mode: 'Markdown'
       },
       { reply_markup: buildBackKeyboard(sessionId, session.extraRows).reply_markup }
     );
   } catch (err) {
     logger.error('PATTERN_ZOOM', err, { coin: session.coin, pattern: pattern.name });
-    await ctx.answerCbQuery('❌ Could not generate zoomed view.');
+    await ctx.answerCbQuery('âŒ Could not generate zoomed view.');
   }
 });
 
@@ -417,11 +447,11 @@ bot.action(/^back_(.+)$/, async (ctx) => {
   const session = patternSessions.get(sessionId);
 
   if (!session) {
-    await ctx.answerCbQuery('⌛ This chart expired. Run the analysis again.');
+    await ctx.answerCbQuery('âŒ› This chart expired. Run the analysis again.');
     return;
   }
 
-  await ctx.answerCbQuery('🔙 Back to full chart');
+  await ctx.answerCbQuery('ðŸ”™ Back to full chart');
 
   try {
     await ctx.editMessageMedia(
@@ -435,7 +465,7 @@ bot.action(/^back_(.+)$/, async (ctx) => {
     );
   } catch (err) {
     logger.error('PATTERN_BACK', err, { coin: session.coin });
-    await ctx.answerCbQuery('❌ Could not restore chart.');
+    await ctx.answerCbQuery('âŒ Could not restore chart.');
   }
 });
 
@@ -443,39 +473,39 @@ bot.action(/^back_(.+)$/, async (ctx) => {
 
 // Telegram can keep an older reply keyboard after the bot is updated. The
 // previous source also contained double-encoded emoji bytes, so tapping one
-// of those cached buttons sends text such as "ðŸ... Ultra AI Auto-Trade".
+// of those cached buttons sends text such as "Ã°Å¸... Ultra AI Auto-Trade".
 // Translate only known legacy button labels before Telegraf's hears handlers.
 const legacyButtonAliases = new Map([
-  ['AI Provider', '🧠 AI Engine'],
-  ['Chart', '📊 Chart'],
-  ['RSI', '📈 RSI'],
-  ['MACD', '📉 MACD'],
-  ['AI Signal', '🤖 AI Signal'],
-  ['Full Analysis', '🧠 Full Analysis'],
-  ['Forecast', '🔮 Forecast'],
-  ['Balance', '💰 Balance'],
-  ['Portfolio', '💼 Portfolio'],
-  ['Orders', '📝 Orders'],
-  ['Positions', '📌 Positions'],
-  ['WS Status', '📡 Connection'],
-  ['Set Timeframe', '⏱️ Timeframe'],
-  ['Ultra AI Auto-Trade', '🚀 Start Auto-Trade'],
-  ['Stop Auto-Trade', '🛑 Stop Auto-Trade'],
-  ['Status', '📊 Status'],
-  ['Performance', '🏆 Performance'],
-  ['Logs', '📋 Logs'],
-  ['Live Mode ON', '🟢 Live Updates'],
-  ['Stop Live', '🔴 Stop Live'],
-  ['Help', '❓ Help']
+  ['AI Provider', 'ðŸ§  AI Engine'],
+  ['Chart', 'ðŸ“Š Chart'],
+  ['RSI', 'ðŸ“ˆ RSI'],
+  ['MACD', 'ðŸ“‰ MACD'],
+  ['AI Signal', 'ðŸ¤– AI Signal'],
+  ['Full Analysis', 'ðŸ§  Full Analysis'],
+  ['Forecast', 'ðŸ”® Forecast'],
+  ['Balance', 'ðŸ’° Balance'],
+  ['Portfolio', 'ðŸ’¼ Portfolio'],
+  ['Orders', 'ðŸ“ Orders'],
+  ['Positions', 'ðŸ“Œ Positions'],
+  ['WS Status', 'ðŸ“¡ Connection'],
+  ['Set Timeframe', 'â±ï¸ Timeframe'],
+  ['Ultra AI Auto-Trade', 'ðŸš€ Start Auto-Trade'],
+  ['Stop Auto-Trade', 'ðŸ›‘ Stop Auto-Trade'],
+  ['Status', 'ðŸ“Š Status'],
+  ['Performance', 'ðŸ† Performance'],
+  ['Logs', 'ðŸ“‹ Logs'],
+  ['Live Mode ON', 'ðŸŸ¢ Live Updates'],
+  ['Stop Live', 'ðŸ”´ Stop Live'],
+  ['Help', 'â“ Help']
 ]);
 
 function normalizeLegacyButtonText(ctx) {
   const text = ctx.message?.text;
   if (typeof text !== 'string') return;
 
-  const looksCorrupted = /Ãƒ|Ã‚|Ã¢|Ã°|Ã…|ï¿½/.test(text);
+  const looksCorrupted = /ÃƒÆ’|Ãƒâ€š|ÃƒÂ¢|ÃƒÂ°|Ãƒâ€¦|Ã¯Â¿Â½/.test(text);
   for (const [legacyLabel, currentLabel] of legacyButtonAliases) {
-    const isKnownOldLabel = text === legacyLabel || text === `🤖 ${legacyLabel}` || text === `⏹️ ${legacyLabel}`;
+    const isKnownOldLabel = text === legacyLabel || text === `ðŸ¤– ${legacyLabel}` || text === `â¹ï¸ ${legacyLabel}`;
     if (isKnownOldLabel || (looksCorrupted && text.endsWith(legacyLabel))) {
       ctx.message.text = currentLabel;
       logger.action('LEGACY_BUTTON_NORMALIZED', { from: text, to: currentLabel });
@@ -567,14 +597,14 @@ async function sendOrEditPhoto(ctx, chatId, messageId, photo, caption, options =
 
 function formatChartCaption(data, pair, tf) {
   return `
-📊 *${pair}* - ${tf} Chart
+ðŸ“Š *${pair}* - ${tf} Chart
 
-💰 Price: $${data.price.toFixed(2)}
-📈 RSI: ${data.rsi.toFixed(2)}
-📉 MACD: ${data.macd.toFixed(4)}
-📊 Volume: ${data.volume.toFixed(0)}
+ðŸ’° Price: $${data.price.toFixed(2)}
+ðŸ“ˆ RSI: ${data.rsi.toFixed(2)}
+ðŸ“‰ MACD: ${data.macd.toFixed(4)}
+ðŸ“Š Volume: ${data.volume.toFixed(0)}
 
-⏰ ${new Date().toISOString()}
+â° ${new Date().toISOString()}
   `;
 }
 
@@ -587,47 +617,47 @@ async function showBalance(ctx, messageId = null) {
     const mode = bybit.getMode ? bybit.getMode().toUpperCase() : 'RO';
     
     let message = `
-💎 *BYBIT UNIFIED ACCOUNT*
-━━━━━━━━━━━━━━━━━━
+ðŸ’Ž *BYBIT UNIFIED ACCOUNT*
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
-💳 *Available to trade:* $${balance.tradableUSD.toFixed(2)}
-💰 *Total equity:* $${balance.totalUSD.toFixed(2)}
-🪙 *Unified USDT:* $${balance.walletUSDT.toFixed(2)}
-🏦 *Funding USDT:* $${balance.fundingUSDT.toFixed(2)}
+ðŸ’³ *Available to trade:* $${balance.tradableUSD.toFixed(2)}
+ðŸ’° *Total equity:* $${balance.totalUSD.toFixed(2)}
+ðŸª™ *Unified USDT:* $${balance.walletUSDT.toFixed(2)}
+ðŸ¦ *Funding USDT:* $${balance.fundingUSDT.toFixed(2)}
 
-🤖 *AI:* ${aiProviderLabel()}
-🔐 *Trading mode:* ${mode}
+ðŸ¤– *AI:* ${aiProviderLabel()}
+ðŸ” *Trading mode:* ${mode}
 
 *Unified assets*
 `;
     if (balance.assets.length === 0) {
-      message += `\n• No assets found`;
+      message += `\nâ€¢ No assets found`;
     } else {
       for (const asset of balance.assets) {
         const usdValue = asset.usdValue || 0;
-        message += `• ${asset.asset}: ${asset.total.toFixed(6)} · $${usdValue.toFixed(2)}\n`;
+        message += `â€¢ ${asset.asset}: ${asset.total.toFixed(6)} Â· $${usdValue.toFixed(2)}\n`;
         if (asset.free !== undefined) {
-          message += `  Free ${asset.free.toFixed(6)} · Used ${asset.used.toFixed(6)}\n`;
+          message += `  Free ${asset.free.toFixed(6)} Â· Used ${asset.used.toFixed(6)}\n`;
         }
       }
     }
 
     if (balance.unavailable) {
-      message += `\n❌ *Live balance unavailable:* ${balance.error || 'unknown Bybit error'}\n`;
+      message += `\nâŒ *Live balance unavailable:* ${balance.error || 'unknown Bybit error'}\n`;
     } else if (balance.tradableUSD < 0.01 && balance.fundingUSDT >= 0.01) {
-      message += `\n⚠️ Your USDT is in Funding. Transfer *Funding → Unified Trading* before starting auto-trade.\n`;
+      message += `\nâš ï¸ Your USDT is in Funding. Transfer *Funding â†’ Unified Trading* before starting auto-trade.\n`;
     } else if (balance.fundingError) {
-      message += `\n⚠️ Funding wallet could not be checked: ${balance.fundingError}\n`;
+      message += `\nâš ï¸ Funding wallet could not be checked: ${balance.fundingError}\n`;
     }
     
-    message += `\n${bybit.isConnected ? '🟢 Live Bybit data' : '🔴 Bybit disconnected'}\n🕒 ${new Date().toISOString()}`;
+    message += `\n${bybit.isConnected ? 'ðŸŸ¢ Live Bybit data' : 'ðŸ”´ Bybit disconnected'}\nðŸ•’ ${new Date().toISOString()}`;
     
     const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.balanceMsgId, message, balanceKeyboard);
     ctx.session.balanceMsgId = newId;
     return newId;
   } catch (error) {
     logger.error('SHOW_BALANCE', error);
-    const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.balanceMsgId, `❌ Balance error: ${error.message}`);
+    const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.balanceMsgId, `âŒ Balance error: ${error.message}`);
     ctx.session.balanceMsgId = newId;
     return newId;
   }
@@ -649,18 +679,18 @@ async function showPortfolio(ctx, messageId = null) {
     const maxPositions = finiteNumber(ultimateAI.maxPositions, 1);
     
     let message = `
-💼 *BYBIT PORTFOLIO*
-━━━━━━━━━━━━━━━━━━
+ðŸ’¼ *BYBIT PORTFOLIO*
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
-💰 *Total equity:* $${totalValue.toFixed(2)}
-💳 *Available to trade:* $${availableToTrade.toFixed(2)}
-📌 *Open positions:* ${positions.length}/${maxPositions}
-🔐 *Trading mode:* ${mode}
+ðŸ’° *Total equity:* $${totalValue.toFixed(2)}
+ðŸ’³ *Available to trade:* $${availableToTrade.toFixed(2)}
+ðŸ“Œ *Open positions:* ${positions.length}/${maxPositions}
+ðŸ” *Trading mode:* ${mode}
 
 *Positions*
 `;
     if (positions.length === 0) {
-      message += `\n• No open positions`;
+      message += `\nâ€¢ No open positions`;
     } else {
       for (const pos of positions.slice(0, 10)) {
         const isFutures = pos?.size !== undefined || pos?.entryPrice !== undefined;
@@ -669,31 +699,31 @@ async function showPortfolio(ctx, messageId = null) {
           const side = String(pos.side || 'unknown').toUpperCase();
           const pnl = finiteNumber(pos.unrealizedPnl);
           const pnlPercent = finiteNumber(pos.percentage);
-          const direction = side === 'LONG' ? '🟢' : side === 'SHORT' ? '🔴' : '⚪';
-          message += `\n${direction} *${coin} ${side}* · ${finiteNumber(pos.size).toFixed(6)}\n`;
-          message += `   Entry $${finiteNumber(pos.entryPrice).toFixed(4)} · Mark $${finiteNumber(pos.markPrice).toFixed(4)}\n`;
-          message += `   PnL ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%) · ${finiteNumber(pos.leverage, 1)}x\n`;
+          const direction = side === 'LONG' ? 'ðŸŸ¢' : side === 'SHORT' ? 'ðŸ”´' : 'âšª';
+          message += `\n${direction} *${coin} ${side}* Â· ${finiteNumber(pos.size).toFixed(6)}\n`;
+          message += `   Entry $${finiteNumber(pos.entryPrice).toFixed(4)} Â· Mark $${finiteNumber(pos.markPrice).toFixed(4)}\n`;
+          message += `   PnL ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%) Â· ${finiteNumber(pos.leverage, 1)}x\n`;
         } else {
           const change = finiteNumber(pos.change24h);
-          const emoji = change >= 0 ? '🟢' : '🔴';
-          message += `\n${emoji} *${compactText(pos.symbol || 'Asset', 24)}* · ${finiteNumber(pos.amount).toFixed(6)}\n`;
-          message += `   Value $${finiteNumber(pos.value).toFixed(2)} · 24h ${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n`;
+          const emoji = change >= 0 ? 'ðŸŸ¢' : 'ðŸ”´';
+          message += `\n${emoji} *${compactText(pos.symbol || 'Asset', 24)}* Â· ${finiteNumber(pos.amount).toFixed(6)}\n`;
+          message += `   Value $${finiteNumber(pos.value).toFixed(2)} Â· 24h ${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n`;
         }
       }
     }
     
     if (balance?.unavailable) {
-      message += `\n❌ Bybit balance unavailable: ${compactText(balance.error, 140)}`;
+      message += `\nâŒ Bybit balance unavailable: ${compactText(balance.error, 140)}`;
     }
-    message += `\n${bybit.isConnected ? '🟢 Live Bybit data' : '🔴 Bybit disconnected'}`;
-    message += `\n🕒 ${new Date().toISOString()}`;
+    message += `\n${bybit.isConnected ? 'ðŸŸ¢ Live Bybit data' : 'ðŸ”´ Bybit disconnected'}`;
+    message += `\nðŸ•’ ${new Date().toISOString()}`;
     
     const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.portfolioMsgId, message, balanceKeyboard);
     ctx.session.portfolioMsgId = newId;
     return newId;
   } catch (error) {
     logger.error('SHOW_PORTFOLIO', error);
-    const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.portfolioMsgId, `❌ Error: ${error.message}`);
+    const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.portfolioMsgId, `âŒ Error: ${error.message}`);
     ctx.session.portfolioMsgId = newId;
     return newId;
   }
@@ -708,32 +738,32 @@ async function showOrders(ctx, messageId = null) {
     const mode = bybit.getMode ? bybit.getMode().toUpperCase() : 'RO';
     
     if (orders.length === 0) {
-      const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.ordersMsgId, `📝 No orders found\n🔑 Mode: ${mode}`);
+      const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.ordersMsgId, `ðŸ“ No orders found\nðŸ”‘ Mode: ${mode}`);
       ctx.session.ordersMsgId = newId;
       return newId;
     }
     
     let message = `
-📝 BYBIT ORDERS - ${new Date().toISOString()}
-🔑 Mode: ${mode}
+ðŸ“ BYBIT ORDERS - ${new Date().toISOString()}
+ðŸ”‘ Mode: ${mode}
 
 `;
     const openOrders = orders.filter(o => o.status === 'open');
     const closedOrders = orders.filter(o => o.status === 'closed');
     
     if (openOrders.length > 0) {
-      message += `⏳ Open Orders (${openOrders.length}):\n`;
+      message += `â³ Open Orders (${openOrders.length}):\n`;
       for (const order of openOrders.slice(0, 5)) {
-        message += `• ${order.symbol} ${order.side.toUpperCase()} ${order.amount} @ $${order.price?.toFixed(2) || 'market'}\n`;
+        message += `â€¢ ${order.symbol} ${order.side.toUpperCase()} ${order.amount} @ $${order.price?.toFixed(2) || 'market'}\n`;
         message += `  Fill: ${order.filled}/${order.amount} | ${new Date(order.timestamp).toLocaleString()}\n`;
       }
       message += '\n';
     }
     
     if (closedOrders.length > 0) {
-      message += `✅ Closed Orders (${closedOrders.length}):\n`;
+      message += `âœ… Closed Orders (${closedOrders.length}):\n`;
       for (const order of closedOrders.slice(0, 10)) {
-        message += `• ${order.symbol} ${order.side.toUpperCase()} ${order.amount} @ $${order.price?.toFixed(2) || 'market'}\n`;
+        message += `â€¢ ${order.symbol} ${order.side.toUpperCase()} ${order.amount} @ $${order.price?.toFixed(2) || 'market'}\n`;
         message += `  ${new Date(order.timestamp).toLocaleString()}\n`;
       }
     }
@@ -742,14 +772,14 @@ async function showOrders(ctx, messageId = null) {
       message += `\n... and ${orders.length - 20} more orders`;
     }
     
-    message += `\n${bybit.isConnected ? '✅ Live Bybit Data' : '⚠️ Mock Data'}`;
+    message += `\n${bybit.isConnected ? 'âœ… Live Bybit Data' : 'âš ï¸ Mock Data'}`;
     
     const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.ordersMsgId, message);
     ctx.session.ordersMsgId = newId;
     return newId;
   } catch (error) {
     logger.error('SHOW_ORDERS', error);
-    const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.ordersMsgId, `❌ Error: ${error.message}`);
+    const newId = await sendOrEdit(ctx, ctx.chat.id, messageId || ctx.session.ordersMsgId, `âŒ Error: ${error.message}`);
     ctx.session.ordersMsgId = newId;
     return newId;
   }
@@ -763,11 +793,11 @@ async function showPositions(ctx) {
   const positions = await orderManager.getOpenPositions();
   
   if (positions.length === 0) {
-    await sendOrEdit(ctx, ctx.chat.id, null, '📊 No open positions');
+    await sendOrEdit(ctx, ctx.chat.id, null, 'ðŸ“Š No open positions');
     return;
   }
   
-  let message = '📊 OPEN POSITIONS\n\n';
+  let message = 'ðŸ“Š OPEN POSITIONS\n\n';
   for (const pos of positions) {
     const pnl = await orderManager.getPositionPnL(pos.coin);
     message += `${pos.coin} ${pos.side.toUpperCase()}\n`;
@@ -788,37 +818,38 @@ async function showAIStatus(ctx) {
   const providerName = ai.provider === 'claude'
     ? 'Claude'
     : ai.provider === 'ensemble'
-      ? 'Claude × DeepSeek Ensemble'
+      ? 'Claude Ã— DeepSeek Ensemble'
     : ai.provider === 'deepseek'
       ? 'DeepSeek'
       : 'Claude + DeepSeek';
   const last = ai.ensemble;
   const reviewItem = item => {
-    if (item?.error) return `❌ ${compactText(item.error, 120)}`;
+    if (item?.error) return `âŒ ${compactText(item.error, 120)}`;
     if (item?.action) return `${item.action} (${finiteNumber(item.confidence)}%)`;
     return 'Not checked';
   };
   const ensembleResult = last
     ? `
 *Last ensemble review*
-• Claude: ${reviewItem(last.claude)}
-• DeepSeek: ${reviewItem(last.deepseek)}
-• Final: ${reviewItem(last.final)}
-• Technical agreement: ${last.technicalAgreement === true ? 'Yes' : last.technicalAgreement === false ? 'No — AI judge resolved it' : 'Partial API result'}
+â€¢ Claude: ${reviewItem(last.claude)}
+â€¢ DeepSeek: ${reviewItem(last.deepseek)}
+â€¢ Final: ${reviewItem(last.final)}
+â€¢ Technical agreement: ${last.technicalAgreement === true ? 'Yes' : last.technicalAgreement === false ? 'No â€” AI judge resolved it' : 'Partial API result'}
 `
     : '';
 
   const message = `
-🧠 *AI ANALYSIS ENGINE*
-━━━━━━━━━━━━━━━━━━
+ðŸ§  *AI ANALYSIS ENGINE*
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
-${ai.ready ? '🟢' : '🔴'} *Status:* ${ai.ready ? 'Ready' : 'Setup required'}
-✨ *Provider:* ${providerName}
-⚙️ *Model:* ${ai.model}
-🎯 *Decision mode:* AI chooses BUY / SELL / HOLD
-⚖️ *Pipeline:* ${ai.provider === 'ensemble' ? 'Claude + DeepSeek independent reviews → final AI judge' : 'Single AI provider'}
-📊 *Confidence gate:* ${ultimateAI.minimumExecutionConfidence > 0 ? `${ultimateAI.minimumExecutionConfidence}%` : 'Disabled — AI decision used directly'}
-🧩 *Patterns:* Context only, never a manual requirement
+${ai.ready ? 'ðŸŸ¢' : 'ðŸ”´'} *Status:* ${ai.ready ? 'Ready' : 'Setup required'}
+âœ¨ *Provider:* ${providerName}
+âš™ï¸ *Model:* ${ai.model}
+ðŸ§  *Reasoning engine:* V${ai.engineVersion || '14'}
+ðŸŽ¯ *Decision mode:* AI chooses BUY / SELL / HOLD
+âš–ï¸ *Pipeline:* ${ai.provider === 'ensemble' ? 'Claude + DeepSeek independent reviews â†’ final AI judge' : 'Single AI provider'}
+ðŸ“Š *Confidence gate:* ${ultimateAI.minimumExecutionConfidence > 0 ? `${ultimateAI.minimumExecutionConfidence}%` : 'Disabled â€” AI decision used directly'}
+ðŸ§© *Patterns:* Context only, never a manual requirement
 
 ${ai.setupHint}
 ${ensembleResult}
@@ -845,23 +876,23 @@ bot.command("start", async (ctx) => {
   const ai = ultimateAI.getAIStatus();
   
   await ctx.reply(`
-🚀 *ULTIMATE AI TRADER*
-━━━━━━━━━━━━━━━━━━
+ðŸš€ *ULTIMATE AI TRADER*
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
-🧠 *AI:* ${aiProviderLabel()}
-${ai.ready ? '🟢 Ready' : '🔴 Setup required'}
+ðŸ§  *AI:* ${aiProviderLabel()}
+${ai.ready ? 'ðŸŸ¢ Ready' : 'ðŸ”´ Setup required'}
 
-💳 *Available balance:* $${status.balance?.toFixed(2) || '0.00'}
-🔐 *Bybit mode:* ${mode}
-🎯 *Daily target:* ${dailyTargetSummary(status)}
-🏁 *Balance target:* ${targetLabel()}
-📈 *Win rate:* ${status.winRate?.toFixed(1) || 0}%
+ðŸ’³ *Available balance:* $${status.balance?.toFixed(2) || '0.00'}
+ðŸ” *Bybit mode:* ${mode}
+ðŸŽ¯ *Daily target:* ${dailyTargetSummary(status)}
+ðŸ *Balance target:* ${targetLabel()}
+ðŸ“ˆ *Win rate:* ${status.winRate?.toFixed(1) || 0}%
 
-⚡ USDT perpetual execution
-📊 Multi-timeframe market analysis
-🛡️ Exchange-side stop-loss and take-profit
+âš¡ USDT perpetual execution
+ðŸ“Š Multi-timeframe market analysis
+ðŸ›¡ï¸ Exchange-side stop-loss and take-profit
 
-Choose an action below 👇
+Choose an action below ðŸ‘‡
   `, { parse_mode: 'Markdown', ...mainKeyboard });
 });
 
@@ -904,9 +935,9 @@ bot.command("close", async (ctx) => {
   const result = await orderManager.closePosition(coin);
   
   if (result.success) {
-    await sendOrEdit(ctx, ctx.chat.id, null, `✅ Position ${coin} closed at $${result.order.price.toFixed(2)}`);
+    await sendOrEdit(ctx, ctx.chat.id, null, `âœ… Position ${coin} closed at $${result.order.price.toFixed(2)}`);
   } else {
-    await sendOrEdit(ctx, ctx.chat.id, null, `❌ Failed to close ${coin}: ${result.error}`);
+    await sendOrEdit(ctx, ctx.chat.id, null, `âŒ Failed to close ${coin}: ${result.error}`);
   }
 });
 
@@ -924,7 +955,7 @@ async function handleStatus(ctx) {
   } else {
     for (const pos of openPositions) {
       const pnl = await orderManager.getPositionPnL(pos.coin);
-      positionsText += `\n• ${pos.coin} ${pos.side.toUpperCase()} | ${pos.size.toFixed(6)} @ $${pos.entryPrice.toFixed(2)}`;
+      positionsText += `\nâ€¢ ${pos.coin} ${pos.side.toUpperCase()} | ${pos.size.toFixed(6)} @ $${pos.entryPrice.toFixed(2)}`;
       if (pnl) {
         positionsText += ` | PnL: ${pnl.pnlPercent >= 0 ? '+' : ''}${pnl.pnlPercent.toFixed(2)}%`;
       }
@@ -932,29 +963,29 @@ async function handleStatus(ctx) {
   }
   
   const message = `
-📊 BOT STATUS
+ðŸ“Š BOT STATUS
 
-⏱️ Timeframe: ${ctx.session.timeframe || '1h'}
-🤖 Auto-Trade: ${isAutoTrading ? 'ACTIVE' : 'INACTIVE'}
-🔑 Mode: ${bybit.getMode ? bybit.getMode().toUpperCase() : 'RO'}
+â±ï¸ Timeframe: ${ctx.session.timeframe || '1h'}
+ðŸ¤– Auto-Trade: ${isAutoTrading ? 'ACTIVE' : 'INACTIVE'}
+ðŸ”‘ Mode: ${bybit.getMode ? bybit.getMode().toUpperCase() : 'RO'}
 
-📈 ULTRA AI:
-• Provider: ${aiProviderLabel()} ${status.aiReady ? '🟢' : '🔴'}
-• Balance: $${status.balance?.toFixed(2) || 'N/A'}
-• Daily Target: ${dailyTargetSummary(status)}
-• Daily Remaining: $${finiteNumber(status.dailyTarget?.remaining).toFixed(2)}
-• Balance Target: ${targetLabel()}
-• Balance Progress: ${status.progress?.toFixed(1) || 0}%
-• Win Rate: ${status.winRate?.toFixed(1) || 0}%
-• Trades Today: ${status.tradesToday || 0}/${ultimateAI.maxTradesPerDay > 0 ? ultimateAI.maxTradesPerDay : 'Unlimited'}
+ðŸ“ˆ ULTRA AI:
+â€¢ Provider: ${aiProviderLabel()} ${status.aiReady ? 'ðŸŸ¢' : 'ðŸ”´'}
+â€¢ Balance: $${status.balance?.toFixed(2) || 'N/A'}
+â€¢ Daily Target: ${dailyTargetSummary(status)}
+â€¢ Daily Remaining: $${finiteNumber(status.dailyTarget?.remaining).toFixed(2)}
+â€¢ Balance Target: ${targetLabel()}
+â€¢ Balance Progress: ${status.progress?.toFixed(1) || 0}%
+â€¢ Win Rate: ${status.winRate?.toFixed(1) || 0}%
+â€¢ Trades Today: ${status.tradesToday || 0}/${ultimateAI.maxTradesPerDay > 0 ? ultimateAI.maxTradesPerDay : 'Unlimited'}
 
-📊 TRADING:
-• Total Trades: ${stats.totalTrades || 0}
-• Total PnL: $${stats.totalPnl?.toFixed(2) || '0.00'}
-• Open Positions: ${openPositions.length}/${ultimateAI.maxPositions}
+ðŸ“Š TRADING:
+â€¢ Total Trades: ${stats.totalTrades || 0}
+â€¢ Total PnL: $${stats.totalPnl?.toFixed(2) || '0.00'}
+â€¢ Open Positions: ${openPositions.length}/${ultimateAI.maxPositions}
 ${positionsText}
 
-📋 Commands:
+ðŸ“‹ Commands:
 /balance - View balance
 /ai - View AI provider
 /portfolio - View portfolio
@@ -974,28 +1005,28 @@ async function handlePerformance(ctx) {
   const stats = db.getStats();
   
   const message = `
-📊 ULTRA AI PERFORMANCE
+ðŸ“Š ULTRA AI PERFORMANCE
 
-💰 Balance: $${status.balance?.toFixed(2) || 'N/A'}
-🎯 Daily Target: ${dailyTargetSummary(status)}
-💵 Daily Remaining: $${finiteNumber(status.dailyTarget?.remaining).toFixed(2)}
-📅 Daily Closed Records: ${finiteNumber(status.dailyTarget?.recordCount)}
-🏁 Balance Target: ${targetLabel()}
-📈 Balance Progress: ${status.progress?.toFixed(1) || 0}%
+ðŸ’° Balance: $${status.balance?.toFixed(2) || 'N/A'}
+ðŸŽ¯ Daily Target: ${dailyTargetSummary(status)}
+ðŸ’µ Daily Remaining: $${finiteNumber(status.dailyTarget?.remaining).toFixed(2)}
+ðŸ“… Daily Closed Records: ${finiteNumber(status.dailyTarget?.recordCount)}
+ðŸ Balance Target: ${targetLabel()}
+ðŸ“ˆ Balance Progress: ${status.progress?.toFixed(1) || 0}%
 
-📊 Trading Stats:
-• Total Trades: ${stats.totalTrades || perf.totalTrades || 0}
-• Win Rate: ${stats.winRate?.toFixed(1) || perf.winRate?.toFixed(1) || 0}%
-• Wins: ${perf.winningTrades || 0}
-• Losses: ${perf.losingTrades || 0}
+ðŸ“Š Trading Stats:
+â€¢ Total Trades: ${stats.totalTrades || perf.totalTrades || 0}
+â€¢ Win Rate: ${stats.winRate?.toFixed(1) || perf.winRate?.toFixed(1) || 0}%
+â€¢ Wins: ${perf.winningTrades || 0}
+â€¢ Losses: ${perf.losingTrades || 0}
 
-📈 PnL:
-• Total: $${perf.totalPnL?.toFixed(2) || '0.00'}
-• Largest Win: $${perf.largestWin?.toFixed(2) || '0.00'}
-• Largest Loss: $${perf.largestLoss?.toFixed(2) || '0.00'}
+ðŸ“ˆ PnL:
+â€¢ Total: $${perf.totalPnL?.toFixed(2) || '0.00'}
+â€¢ Largest Win: $${perf.largestWin?.toFixed(2) || '0.00'}
+â€¢ Largest Loss: $${perf.largestLoss?.toFixed(2) || '0.00'}
 
-🔑 Mode: ${status.mode?.toUpperCase() || 'RO'}
-🔄 Trading: ${status.isTrading ? '🟢 Active' : '🔴 Idle'}
+ðŸ”‘ Mode: ${status.mode?.toUpperCase() || 'RO'}
+ðŸ”„ Trading: ${status.isTrading ? 'ðŸŸ¢ Active' : 'ðŸ”´ Idle'}
   `;
   
   performanceMsgId = await sendOrEdit(ctx, ctx.chat.id, performanceMsgId, message);
@@ -1004,10 +1035,10 @@ async function handlePerformance(ctx) {
 async function handleDailyTarget(ctx) {
   logger.command('DAILY_TARGET', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   const daily = await ultimateAI.syncDailyPnl({ force: true });
-  const state = daily.reached ? 'REACHED — new entries paused' : 'ACTIVE';
-  const errorLine = daily.error ? `\n⚠️ Sync warning: ${compactText(daily.error, 180)}` : '';
+  const state = daily.reached ? 'REACHED â€” new entries paused' : 'ACTIVE';
+  const errorLine = daily.error ? `\nâš ï¸ Sync warning: ${compactText(daily.error, 180)}` : '';
 
-  await sendOrEdit(ctx, ctx.chat.id, null, `💵 DAILY PROFIT TARGET
+  await sendOrEdit(ctx, ctx.chat.id, null, `ðŸ’µ DAILY PROFIT TARGET
 
 Status: ${state}
 Net realized PnL: $${finiteNumber(daily.netPnl).toFixed(2)}
@@ -1024,7 +1055,7 @@ The target is a stop condition, not a guaranteed return. The bot will not force 
 }
 
 bot.command('daily', handleDailyTarget);
-bot.hears('💵 Daily Target', handleDailyTarget);
+bot.hears('ðŸ’µ Daily Target', handleDailyTarget);
 
 async function handleLogs(ctx) {
   logger.command('LOGS', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
@@ -1037,46 +1068,46 @@ async function handleLogs(ctx) {
     const lastPerf = perf[perf.length - 1] || {};
 
     let message = `
-📋 ACTIVITY LOG
-━━━━━━━━━━━━━━━━━━
+ðŸ“‹ ACTIVITY LOG
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
-📊 Today
-• Steps: ${finiteNumber(logs.ALL)}
-• Bot actions: ${finiteNumber(logs.BOT)}
-• Trades: ${finiteNumber(logs.TRADES)}
-• AI decisions: ${finiteNumber(logs.AI)}
-• Scans: ${finiteNumber(logs.SCANS)}
-• Errors: ${finiteNumber(logs.ERRORS)}
+ðŸ“Š Today
+â€¢ Steps: ${finiteNumber(logs.ALL)}
+â€¢ Bot actions: ${finiteNumber(logs.BOT)}
+â€¢ Trades: ${finiteNumber(logs.TRADES)}
+â€¢ AI decisions: ${finiteNumber(logs.AI)}
+â€¢ Scans: ${finiteNumber(logs.SCANS)}
+â€¢ Errors: ${finiteNumber(logs.ERRORS)}
 
-📈 Latest performance
-• Balance: ${lastPerf.balance == null ? 'N/A' : `$${finiteNumber(lastPerf.balance).toFixed(2)}`}
-• PnL: $${finiteNumber(lastPerf.totalPnL).toFixed(2)}
-• Win rate: ${finiteNumber(lastPerf.winRate).toFixed(1)}%
+ðŸ“ˆ Latest performance
+â€¢ Balance: ${lastPerf.balance == null ? 'N/A' : `$${finiteNumber(lastPerf.balance).toFixed(2)}`}
+â€¢ PnL: $${finiteNumber(lastPerf.totalPnL).toFixed(2)}
+â€¢ Win rate: ${finiteNumber(lastPerf.winRate).toFixed(1)}%
 
-📝 Recent activity`;
+ðŸ“ Recent activity`;
 
     if (recentSteps.length === 0) {
-      message += `\n• No activity recorded yet`;
+      message += `\nâ€¢ No activity recorded yet`;
     } else {
       for (const step of recentSteps.slice(-5)) {
         const label = compactText(step?.step || step?.action || 'EVENT', 30);
         const detail = compactText(step?.data ?? step, 90);
-        message += `\n• ${label}${detail ? ` — ${detail}` : ''}`;
+        message += `\nâ€¢ ${label}${detail ? ` â€” ${detail}` : ''}`;
       }
     }
 
     if (errors.length > 0) {
-      message += `\n\n⚠️ Recent errors`;
+      message += `\n\nâš ï¸ Recent errors`;
       for (const errorEntry of errors.slice(-3)) {
-        message += `\n• ${compactText(errorEntry?.module || 'ERROR', 30)} — ${compactText(errorEntry?.error || errorEntry, 120)}`;
+        message += `\nâ€¢ ${compactText(errorEntry?.module || 'ERROR', 30)} â€” ${compactText(errorEntry?.error || errorEntry, 120)}`;
       }
     }
 
-    message += `\n\n🕒 ${new Date().toISOString()}`;
+    message += `\n\nðŸ•’ ${new Date().toISOString()}`;
     await sendOrEdit(ctx, ctx.chat.id, null, message, { parse_mode: false });
   } catch (error) {
     logger.error('SHOW_LOGS', error);
-    await sendOrEdit(ctx, ctx.chat.id, null, `❌ Logs error: ${compactText(error.message, 180)}`, { parse_mode: false });
+    await sendOrEdit(ctx, ctx.chat.id, null, `âŒ Logs error: ${compactText(error.message, 180)}`, { parse_mode: false });
   }
 }
 
@@ -1086,7 +1117,7 @@ async function handleConnection(ctx) {
     ctx,
     ctx.chat.id,
     null,
-    '🔄 Checking Bybit, Claude and DeepSeek...',
+    'ðŸ”„ Checking Bybit, Claude and DeepSeek...',
     { parse_mode: false }
   );
 
@@ -1109,8 +1140,8 @@ async function handleConnection(ctx) {
       : [];
 
     const providerLine = (name, model, health) => {
-      const icon = health?.ok ? '🟢' : '🔴';
-      const latency = Number.isFinite(Number(health?.latencyMs)) ? ` · ${health.latencyMs}ms` : '';
+      const icon = health?.ok ? 'ðŸŸ¢' : 'ðŸ”´';
+      const latency = Number.isFinite(Number(health?.latencyMs)) ? ` Â· ${health.latencyMs}ms` : '';
       const detail = health?.ok
         ? `${model}${latency}`
         : compactText(health?.error || 'Not configured', 160);
@@ -1119,28 +1150,28 @@ async function handleConnection(ctx) {
 
     const safePositions = Array.isArray(positions) ? positions : [];
     const maxPositions = finiteNumber(ultimateAI.maxPositions, 1);
-    const bybitIcon = bybitHealth?.connected ? '🟢' : '🔴';
+    const bybitIcon = bybitHealth?.connected ? 'ðŸŸ¢' : 'ðŸ”´';
     const bybitDetail = bybitHealth?.connected
-      ? `${String(bybitHealth.marketType || 'swap').toUpperCase()} · ${String(bybitHealth.mode || 'ro').toUpperCase()}${Number.isFinite(Number(bybitHealth.latencyMs)) ? ` · ${bybitHealth.latencyMs}ms` : ''}`
+      ? `${String(bybitHealth.marketType || 'swap').toUpperCase()} Â· ${String(bybitHealth.mode || 'ro').toUpperCase()}${Number.isFinite(Number(bybitHealth.latencyMs)) ? ` Â· ${bybitHealth.latencyMs}ms` : ''}`
       : compactText(bybitHealth?.error || 'Not connected', 160);
 
     let message = `
-🔌 CONNECTION STATUS
-━━━━━━━━━━━━━━━━━━
+ðŸ”Œ CONNECTION STATUS
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 ${bybitIcon} Bybit: ${bybitDetail}
 ${providerLine('Claude', ultimateAI.claudeModel, aiHealth?.claude)}
 ${providerLine('DeepSeek', ultimateAI.deepseekModel, aiHealth?.deepseek)}
 
-📌 Open positions: ${safePositions.length}/${maxPositions}`;
+ðŸ“Œ Open positions: ${safePositions.length}/${maxPositions}`;
 
     for (const position of safePositions.slice(0, 8)) {
       const coin = compactText(position?.coin || String(position?.symbol || '').split('/')[0] || 'Unknown', 20);
       const side = String(position?.side || 'unknown').toUpperCase();
-      message += `\n• ${coin} ${side} · ${finiteNumber(position?.size).toFixed(6)}`;
+      message += `\nâ€¢ ${coin} ${side} Â· ${finiteNumber(position?.size).toFixed(6)}`;
     }
 
-    message += `\n\n🕒 ${new Date().toISOString()}`;
+    message += `\n\nðŸ•’ ${new Date().toISOString()}`;
     await sendOrEdit(ctx, ctx.chat.id, loadingId, message, { parse_mode: false });
   } catch (error) {
     logger.error('CONNECTION_STATUS', error);
@@ -1148,7 +1179,7 @@ ${providerLine('DeepSeek', ultimateAI.deepseekModel, aiHealth?.deepseek)}
       ctx,
       ctx.chat.id,
       loadingId,
-      `❌ Connection check failed: ${compactText(error.message, 200)}`,
+      `âŒ Connection check failed: ${compactText(error.message, 200)}`,
       { parse_mode: false }
     );
   }
@@ -1162,85 +1193,85 @@ bot.command("wsstatus", handleConnection);
 
 // ==================== BUTTON HANDLERS ====================
 
-bot.hears('🧠 AI Engine', async (ctx) => {
+bot.hears('ðŸ§  AI Engine', async (ctx) => {
   logger.button('AI_PROVIDER', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await showAIStatus(ctx);
 });
 
-bot.hears('📊 Chart', async (ctx) => {
+bot.hears('ðŸ“Š Chart', async (ctx) => {
   logger.button('CHART', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await ctx.reply('Select a trading pair:', pairKeyboard);
 });
 
-bot.hears('🔮 Forecast', async (ctx) => {
+bot.hears('ðŸ”® Forecast', async (ctx) => {
   logger.button('FORECAST', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await handleForecast(ctx);
 });
 
-bot.hears('📈 RSI', async (ctx) => {
+bot.hears('ðŸ“ˆ RSI', async (ctx) => {
   logger.button('RSI', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await handleRsi(ctx);
 });
 
-bot.hears('📉 MACD', async (ctx) => {
+bot.hears('ðŸ“‰ MACD', async (ctx) => {
   logger.button('MACD', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await handleMacd(ctx);
 });
 
-bot.hears('🤖 AI Signal', async (ctx) => {
+bot.hears('ðŸ¤– AI Signal', async (ctx) => {
   logger.button('AI_SIGNAL', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await handleSignal(ctx);
 });
 
-bot.hears('🧠 Full Analysis', async (ctx) => {
+bot.hears('ðŸ§  Full Analysis', async (ctx) => {
   logger.button('FULL_ANALYSIS', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await handleAnalysis(ctx);
 });
 
-bot.hears('💰 Balance', async (ctx) => {
+bot.hears('ðŸ’° Balance', async (ctx) => {
   logger.button('BALANCE', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await showBalance(ctx);
 });
 
-bot.hears('💼 Portfolio', async (ctx) => {
+bot.hears('ðŸ’¼ Portfolio', async (ctx) => {
   logger.button('PORTFOLIO', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await showPortfolio(ctx);
 });
 
-bot.hears('📝 Orders', async (ctx) => {
+bot.hears('ðŸ“ Orders', async (ctx) => {
   logger.button('ORDERS', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await showOrders(ctx);
 });
 
-bot.hears('📌 Positions', async (ctx) => {
+bot.hears('ðŸ“Œ Positions', async (ctx) => {
   logger.button('POSITIONS', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await showPositions(ctx);
 });
 
-bot.hears('📊 Status', async (ctx) => {
+bot.hears('ðŸ“Š Status', async (ctx) => {
   logger.button('STATUS', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await handleStatus(ctx);
 });
 
-bot.hears('🏆 Performance', async (ctx) => {
+bot.hears('ðŸ† Performance', async (ctx) => {
   logger.button('PERFORMANCE', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await handlePerformance(ctx);
 });
 
-bot.hears('📋 Logs', async (ctx) => {
+bot.hears('ðŸ“‹ Logs', async (ctx) => {
   logger.button('LOGS', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await handleLogs(ctx);
 });
 
-bot.hears('📡 Connection', async (ctx) => {
+bot.hears('ðŸ“¡ Connection', async (ctx) => {
   logger.button('WS_STATUS', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await handleConnection(ctx);
 });
 
-bot.hears('⏱️ Timeframe', async (ctx) => {
+bot.hears('â±ï¸ Timeframe', async (ctx) => {
   logger.button('SET_TIMEFRAME', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   const current = ctx.session.timeframe || '1h';
-  await ctx.reply(`⏱️ Current Timeframe: ${current}\n\nSelect new timeframe:`, {
+  await ctx.reply(`â±ï¸ Current Timeframe: ${current}\n\nSelect new timeframe:`, {
     parse_mode: 'Markdown',
     ...timeframeKeyboard
   });
@@ -1255,7 +1286,7 @@ function startBackgroundMarketScan(ctx, trigger) {
           ctx,
           ctx.chat.id,
           autoTradeMsgId,
-          `❌ Background scan failed: ${compactText(error.message, 180)}`,
+          `âŒ Background scan failed: ${compactText(error.message, 180)}`,
           { parse_mode: false }
         );
       } catch (notificationError) {
@@ -1265,38 +1296,38 @@ function startBackgroundMarketScan(ctx, trigger) {
   });
 }
 
-bot.hears('🚀 Start Auto-Trade', async (ctx) => {
+bot.hears('ðŸš€ Start Auto-Trade', async (ctx) => {
   logger.button('ULTRA_AI_AUTO_TRADE', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   
   const mode = bybit.getMode ? bybit.getMode() : 'ro';
   if (mode === 'ro') {
-    await sendOrEdit(ctx, ctx.chat.id, null, '❌ READ-ONLY MODE\n\nAuto-trading requires READ-WRITE keys.\n\nSet BYBIT_MODE=rw in .env');
+    await sendOrEdit(ctx, ctx.chat.id, null, 'âŒ READ-ONLY MODE\n\nAuto-trading requires READ-WRITE keys.\n\nSet BYBIT_MODE=rw in .env');
     return;
   }
 
   if (isAutoTrading) {
-    await sendOrEdit(ctx, ctx.chat.id, null, '⚠️ Auto-Trade is already active!');
+    await sendOrEdit(ctx, ctx.chat.id, null, 'âš ï¸ Auto-Trade is already active!');
     return;
   }
 
   const status = ultimateAI.getStatus();
   
   await sendOrEdit(ctx, ctx.chat.id, null, `
-🤖 ULTRA AI AUTO-TRADE ACTIVATED
+ðŸ¤– ULTRA AI AUTO-TRADE ACTIVATED
 
-🧠 Ultra AI Trading System
-• Scanning: ${AUTO_TRADE_COINS.join(', ')} (all ${AUTO_TRADE_COINS.length} coins every sweep)
-• Timeframes: ${SCAN_TIMEFRAMES.join(', ')}
-• Sweep interval: Every ${Math.round(AUTO_TRADE_INTERVAL / 1000)}s
-• Risk: 1.2% per trade
-• Max Positions: ${ultimateAI.maxPositions}
-• Execution Confidence: ${ultimateAI.minimumExecutionConfidence > 0 ? `${ultimateAI.minimumExecutionConfidence}%` : 'AI decides (no manual confidence gate)'}
-• Patterns: AI context only (no manual requirement)
+ðŸ§  Ultra AI Trading System
+â€¢ Scanning: ${AUTO_TRADE_COINS.join(', ')} (all ${AUTO_TRADE_COINS.length} coins every sweep)
+â€¢ Timeframes: ${SCAN_TIMEFRAMES.join(', ')}
+â€¢ Sweep interval: Every ${Math.round(AUTO_TRADE_INTERVAL / 1000)}s
+â€¢ Risk: 1.2% per trade
+â€¢ Max Positions: ${ultimateAI.maxPositions}
+â€¢ Execution Confidence: ${ultimateAI.minimumExecutionConfidence > 0 ? `${ultimateAI.minimumExecutionConfidence}%` : 'AI decides (no manual confidence gate)'}
+â€¢ Patterns: AI context only (no manual requirement)
 
-📊 Target: $${status.balance?.toFixed(2) || '0.00'} → ${targetLabel()}
-📈 Progress: ${status.progress?.toFixed(1) || 0}%
+ðŸ“Š Target: $${status.balance?.toFixed(2) || '0.00'} â†’ ${targetLabel()}
+ðŸ“ˆ Progress: ${status.progress?.toFixed(1) || 0}%
 
-🔄 First sweep starting now...
+ðŸ”„ First sweep starting now...
   `);
 
   isAutoTrading = true;
@@ -1317,7 +1348,7 @@ bot.hears('🚀 Start Auto-Trade', async (ctx) => {
   startBackgroundMarketScan(ctx, 'button');
 });
 
-bot.hears('🛑 Stop Auto-Trade', async (ctx) => {
+bot.hears('ðŸ›‘ Stop Auto-Trade', async (ctx) => {
   logger.button('STOP_AUTO_TRADE', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   isAutoTrading = false;
   if (autoTradeInterval) {
@@ -1326,63 +1357,63 @@ bot.hears('🛑 Stop Auto-Trade', async (ctx) => {
   }
   
   await sendOrEdit(ctx, ctx.chat.id, null, `
-⏹️ AUTO-TRADE DEACTIVATED
+â¹ï¸ AUTO-TRADE DEACTIVATED
 
-📊 Active trades will remain open.
-🔔 You will still receive notifications.
+ðŸ“Š Active trades will remain open.
+ðŸ”” You will still receive notifications.
 
-To reactivate: press "🚀 Start Auto-Trade"
+To reactivate: press "ðŸš€ Start Auto-Trade"
   `);
 });
 
-bot.hears('🟢 Live Updates', async (ctx) => {
+bot.hears('ðŸŸ¢ Live Updates', async (ctx) => {
   logger.button('LIVE_MODE_ON', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   ctx.session.liveMode = true;
-  await ctx.reply('🟢 LIVE MODE ACTIVATED\n\nAuto-updates every 30 seconds!', { parse_mode: 'Markdown' });
+  await ctx.reply('ðŸŸ¢ LIVE MODE ACTIVATED\n\nAuto-updates every 30 seconds!', { parse_mode: 'Markdown' });
   startLiveUpdates(ctx);
 });
 
-bot.hears('🔴 Stop Live', async (ctx) => {
+bot.hears('ðŸ”´ Stop Live', async (ctx) => {
   logger.button('LIVE_MODE_OFF', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   ctx.session.liveMode = false;
   if (ctx.session.liveInterval) {
     clearInterval(ctx.session.liveInterval);
     ctx.session.liveInterval = null;
   }
-  await ctx.reply('🔴 LIVE MODE DEACTIVATED', { parse_mode: 'Markdown' });
+  await ctx.reply('ðŸ”´ LIVE MODE DEACTIVATED', { parse_mode: 'Markdown' });
 });
 
-bot.hears('❓ Help', async (ctx) => {
+bot.hears('â“ Help', async (ctx) => {
   logger.button('HELP', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await ctx.reply(`
-📚 *TRADER COMMAND CENTER*
-━━━━━━━━━━━━━━━━━━
+ðŸ“š *TRADER COMMAND CENTER*
+â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
-📊 *Market analysis*
-• /chart BTC/USDT — Candlestick chart
-• /rsi BTC/USDT — RSI indicator
-• /macd BTC/USDT — MACD indicator
-• /signal BTC/USDT — Claude + DeepSeek signal
-• /analysis BTC/USDT — Full AI analysis
-• /forecast BTC/USDT — Rough statistical future chart
-• /coins — Show the multi-coin scan universe
+ðŸ“Š *Market analysis*
+â€¢ /chart BTC/USDT â€” Candlestick chart
+â€¢ /rsi BTC/USDT â€” RSI indicator
+â€¢ /macd BTC/USDT â€” MACD indicator
+â€¢ /signal BTC/USDT â€” Claude + DeepSeek signal
+â€¢ /analysis BTC/USDT â€” Full AI analysis
+â€¢ /forecast BTC/USDT â€” Rough statistical future chart
+â€¢ /coins â€” Show the multi-coin scan universe
 
-💼 *Account & trading*
-• /balance — Available trading balance
-• /portfolio — Account portfolio
-• /orders — Order history
-• /positions — Open positions
-• /close BTC — Close a position
-• Direct BUY/SELL buttons are disabled; AI selects 4x, 5x, 10x or 100x
+ðŸ’¼ *Account & trading*
+â€¢ /balance â€” Available trading balance
+â€¢ /portfolio â€” Account portfolio
+â€¢ /orders â€” Order history
+â€¢ /positions â€” Open positions
+â€¢ /close BTC â€” Close a position
+â€¢ Direct BUY/SELL buttons are disabled; AI selects 4x, 5x, 10x or 100x
 
-🧠 *System*
-• /ai — AI engine status
-• /performance — Trading performance
-• /status — Bot status
-• /logs — Recent activity
-• /connection — Bybit and AI API status
+ðŸ§  *System*
+â€¢ /ai â€” AI engine status
+â€¢ /performance â€” Trading performance
+â€¢ /status â€” Bot status
+â€¢ /logs â€” Recent activity
+â€¢ /connection â€” Bybit and AI API status
 
-🏠 Send /start anytime to refresh the main menu.
+ðŸ  Send /start anytime to refresh the main menu.
   `, { parse_mode: 'Markdown' });
 });
 
@@ -1396,7 +1427,7 @@ async function handleChart(ctx) {
   ctx.session.selectedPair = pair;
   const tf = ctx.session.timeframe || '1h';
   
-  const msg = await ctx.reply(`📊 *Generating ${tf} chart for ${pair}...*`, { parse_mode: 'Markdown' });
+  const msg = await ctx.reply(`ðŸ“Š *Generating ${tf} chart for ${pair}...*`, { parse_mode: 'Markdown' });
   
   try {
     const data = await getMarketData(base, tf);
@@ -1414,7 +1445,7 @@ async function handleChart(ctx) {
     ctx.session.chartMsgId = sent.message_id;
     await ctx.deleteMessage(msg.message_id);
   } catch (error) {
-    await ctx.reply(`❌ Error: ${error.message}`);
+    await ctx.reply(`âŒ Error: ${error.message}`);
   }
 }
 
@@ -1424,7 +1455,7 @@ async function handleRsi(ctx) {
   const [base] = pair.split('/');
   const tf = ctx.session.timeframe || '1h';
   
-  const msg = await ctx.reply(`📈 *Generating RSI chart for ${pair} (${tf})...*`, { parse_mode: 'Markdown' });
+  const msg = await ctx.reply(`ðŸ“ˆ *Generating RSI chart for ${pair} (${tf})...*`, { parse_mode: 'Markdown' });
   
   try {
     const data = await getMarketData(base, tf);
@@ -1434,15 +1465,15 @@ async function handleRsi(ctx) {
       { source: chartPath },
       {
         caption: `
-📈 *${pair} - RSI (14)* - ${tf}
+ðŸ“ˆ *${pair} - RSI (14)* - ${tf}
 
 Current RSI: ${data.rsi.toFixed(2)}
-• Overbought: > 70
-• Oversold: < 30
+â€¢ Overbought: > 70
+â€¢ Oversold: < 30
 
-*Signal:* ${data.rsi < 30 ? '🟢 Oversold - BUY' : data.rsi > 70 ? '🔴 Overbought - SELL' : '⚪ Neutral'}
+*Signal:* ${data.rsi < 30 ? 'ðŸŸ¢ Oversold - BUY' : data.rsi > 70 ? 'ðŸ”´ Overbought - SELL' : 'âšª Neutral'}
 
-⏰ ${new Date().toISOString()}
+â° ${new Date().toISOString()}
         `,
         parse_mode: 'Markdown'
       }
@@ -1450,7 +1481,7 @@ Current RSI: ${data.rsi.toFixed(2)}
     
     await ctx.deleteMessage(msg.message_id);
   } catch (error) {
-    await ctx.reply(`❌ Error: ${error.message}`);
+    await ctx.reply(`âŒ Error: ${error.message}`);
   }
 }
 
@@ -1460,7 +1491,7 @@ async function handleMacd(ctx) {
   const [base] = pair.split('/');
   const tf = ctx.session.timeframe || '1h';
   
-  const msg = await ctx.reply(`📉 *Generating MACD chart for ${pair} (${tf})...*`, { parse_mode: 'Markdown' });
+  const msg = await ctx.reply(`ðŸ“‰ *Generating MACD chart for ${pair} (${tf})...*`, { parse_mode: 'Markdown' });
   
   try {
     const data = await getMarketData(base, tf);
@@ -1470,15 +1501,15 @@ async function handleMacd(ctx) {
       { source: chartPath },
       {
         caption: `
-📉 *${pair} - MACD* - ${tf}
+ðŸ“‰ *${pair} - MACD* - ${tf}
 
 MACD: ${data.macd.toFixed(4)}
 Signal: ${data.macdSignal.toFixed(4)}
 Histogram: ${data.macdHistogram.toFixed(4)}
 
-*Signal:* ${data.macdHistogram > 0 ? '🟢 Bullish' : '🔴 Bearish'}
+*Signal:* ${data.macdHistogram > 0 ? 'ðŸŸ¢ Bullish' : 'ðŸ”´ Bearish'}
 
-⏰ ${new Date().toISOString()}
+â° ${new Date().toISOString()}
         `,
         parse_mode: 'Markdown'
       }
@@ -1486,7 +1517,7 @@ Histogram: ${data.macdHistogram.toFixed(4)}
     
     await ctx.deleteMessage(msg.message_id);
   } catch (error) {
-    await ctx.reply(`❌ Error: ${error.message}`);
+    await ctx.reply(`âŒ Error: ${error.message}`);
   }
 }
 
@@ -1495,7 +1526,7 @@ async function handleForecast(ctx) {
   const pair = text[1]?.toUpperCase() || ctx.session.selectedPair || 'BTC/USDT';
   const [base] = pair.split('/');
   const tf = ctx.session.timeframe || '1h';
-  const msg = await ctx.reply(`🔮 Building rough statistical forecast for ${pair} (${tf})...`);
+  const msg = await ctx.reply(`ðŸ”® Building rough statistical forecast for ${pair} (${tf})...`);
 
   try {
     const data = await getMarketData(base, tf, 300);
@@ -1506,12 +1537,12 @@ async function handleForecast(ctx) {
     }
 
     const chartPath = await forecastChartGenerator.generate(base, data, forecast);
-    const caption = `🔮 ${pair} ROUGH FORECAST (${tf})\n\n` +
+    const caption = `ðŸ”® ${pair} ROUGH FORECAST (${tf})\n\n` +
       `Bias: ${forecast.direction} (${forecast.confidence}% scenario strength)\n` +
       `Horizon: ${forecast.horizonLabel}\n` +
       `Current: $${forecast.currentPrice.toFixed(4)}\n` +
       `Expected: $${forecast.expectedPrice.toFixed(4)} (${forecast.expectedReturnPct >= 0 ? '+' : ''}${forecast.expectedReturnPct.toFixed(2)}%)\n` +
-      `80% scenario band: $${forecast.lowerPrice.toFixed(4)} — $${forecast.upperPrice.toFixed(4)}\n` +
+      `80% scenario band: $${forecast.lowerPrice.toFixed(4)} â€” $${forecast.upperPrice.toFixed(4)}\n` +
       `Up/down probability: ${forecast.upProbabilityPct.toFixed(1)}% / ${forecast.downProbabilityPct.toFixed(1)}%\n\n` +
       `Approximation only. It is not a guaranteed future chart or financial advice.`;
 
@@ -1533,7 +1564,7 @@ async function handleSignal(ctx) {
   const [base] = pair.split('/');
   const tf = ctx.session.timeframe || '1h';
   
-  const msg = await ctx.reply(`🧠 *AI Analyzing ${pair} (${tf})...*`, { parse_mode: 'Markdown' });
+  const msg = await ctx.reply(`ðŸ§  *AI Analyzing ${pair} (${tf})...*`, { parse_mode: 'Markdown' });
   
   try {
     const data = await getMarketData(base, tf);
@@ -1551,13 +1582,13 @@ async function handleSignal(ctx) {
     
     if (result && result.action !== 'HOLD') {
       const caption = `
-🤖 *AI TRADING SIGNAL* - ${pair} (${tf})
+ðŸ¤– *AI TRADING SIGNAL* - ${pair} (${tf})
 
-*Action:* ${result.action} ${result.action === 'BUY' ? '🟢' : result.action === 'SELL' ? '🔴' : '⚪'}
+*Action:* ${result.action} ${result.action === 'BUY' ? 'ðŸŸ¢' : result.action === 'SELL' ? 'ðŸ”´' : 'âšª'}
 *Confidence:* ${result.confidence}%
 *AI Consensus:* ${aiConsensusSummary(result)}
 ${officialNewsContext(result)}
-${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}
+${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}${ultraReasoningText(result)}
 
 *Entry:* $${result.entryPrice.toFixed(2)}
 *SL:* $${result.stopLoss.toFixed(2)}
@@ -1567,15 +1598,15 @@ ${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementTe
 *Patterns:* ${patterns.length > 0 ? patterns.map(p => p.name).join(', ') : 'None'}
 *Reason:* ${result.reasoning}
 
-📈 RSI: ${data.rsi?.toFixed(2) || 'N/A'}
-📉 Trend: ${techAnalysis.marketTrend || 'NEUTRAL'}
+ðŸ“ˆ RSI: ${data.rsi?.toFixed(2) || 'N/A'}
+ðŸ“‰ Trend: ${techAnalysis.marketTrend || 'NEUTRAL'}
 
-⏰ ${new Date().toISOString()}
+â° ${new Date().toISOString()}
           `;
       await sendPatternChart(ctx, base, data, patterns, result, patternChartPath, caption);
     } else {
       const caption = `
-🟡 HOLD - ${pair}
+ðŸŸ¡ HOLD - ${pair}
 
 Confidence: ${result?.confidence || 0}%
 AI Consensus: ${aiConsensusSummary(result)}
@@ -1583,18 +1614,18 @@ ${officialNewsContext(result)}
 AI reason: ${result?.reasoning || 'The AI found no directional edge.'}
 Progress: $${ultimateAI.currentBalance?.toFixed(2) || '0.00'} / ${targetLabel()}
 
-📊 Patterns: ${patterns.length > 0 ? patterns.map(p => p.name).join(', ') : 'None detected'}
-📈 RSI: ${data.rsi?.toFixed(2) || 'N/A'}
-📉 Trend: ${techAnalysis.marketTrend || 'NEUTRAL'}
+ðŸ“Š Patterns: ${patterns.length > 0 ? patterns.map(p => p.name).join(', ') : 'None detected'}
+ðŸ“ˆ RSI: ${data.rsi?.toFixed(2) || 'N/A'}
+ðŸ“‰ Trend: ${techAnalysis.marketTrend || 'NEUTRAL'}
 
-⏰ ${new Date().toISOString()}
+â° ${new Date().toISOString()}
           `;
       await sendPatternChart(ctx, base, data, patterns, result || { action: 'HOLD', confidence: 0 }, patternChartPath, caption);
     }
     
     await ctx.deleteMessage(msg.message_id);
   } catch (error) {
-    await ctx.reply(`❌ Error: ${error.message}`);
+    await ctx.reply(`âŒ Error: ${error.message}`);
   }
 }
 
@@ -1604,7 +1635,7 @@ async function handleAnalysis(ctx) {
   const [base] = pair.split('/');
   const tf = ctx.session.timeframe || '1h';
   
-  const msg = await ctx.reply(`📊 *Generating full analysis for ${pair} (${tf})...*`, { parse_mode: 'Markdown' });
+  const msg = await ctx.reply(`ðŸ“Š *Generating full analysis for ${pair} (${tf})...*`, { parse_mode: 'Markdown' });
   
   try {
     const data = await getMarketData(base, tf);
@@ -1620,12 +1651,12 @@ async function handleAnalysis(ctx) {
     );
     
     const caption = `
-📊 *${pair} - Full Analysis* (${tf})
+ðŸ“Š *${pair} - Full Analysis* (${tf})
 
 *AI Signal:* ${result?.action || 'HOLD'} (${result?.confidence || 0}%)
 *AI Consensus:* ${aiConsensusSummary(result)}
 ${officialNewsContext(result)}
-${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}
+${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}${ultraReasoningText(result)}
 *Entry:* $${result?.entryPrice?.toFixed(2) || 'N/A'}
 *SL:* $${result?.stopLoss?.toFixed(2) || 'N/A'}
 *TP:* $${result?.takeProfit?.toFixed(2) || 'N/A'}
@@ -1633,10 +1664,10 @@ ${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementTe
 *Patterns:* ${patterns.length > 0 ? patterns.map(p => p.name).join(', ') : 'None'}
 *Reason:* ${result?.reasoning || 'No clear signal'}
 
-📈 RSI: ${data.rsi?.toFixed(2) || 'N/A'}
-📉 Trend: ${techAnalysis.marketTrend || 'NEUTRAL'}
+ðŸ“ˆ RSI: ${data.rsi?.toFixed(2) || 'N/A'}
+ðŸ“‰ Trend: ${techAnalysis.marketTrend || 'NEUTRAL'}
 
-⏰ ${new Date().toISOString()}
+â° ${new Date().toISOString()}
         `;
     await sendPatternChart(ctx, base, data, patterns, result || { action: 'HOLD', confidence: 0 }, patternChartPath, caption);
 
@@ -1659,7 +1690,7 @@ Approximation only; not guaranteed.`
     
     await ctx.deleteMessage(msg.message_id);
   } catch (error) {
-    await ctx.reply(`❌ Error: ${error.message}`);
+    await ctx.reply(`âŒ Error: ${error.message}`);
   }
 }
 
@@ -1814,19 +1845,19 @@ async function runFullMarketScan(ctx) {
               : result?.action === 'HOLD'
                 ? 'AI HOLD'
                 : 'AI SIGNAL NOT EXECUTED';
-          const patternList = patterns.slice(0, 12).map(pattern => `• ${pattern.name}`).join('\n') || '• None';
+          const patternList = patterns.slice(0, 12).map(pattern => `â€¢ ${pattern.name}`).join('\n') || 'â€¢ None';
           const caption = `${title} - ${coin}/USDT (${tf})\n\n` +
             `Pre-scan score: ${scanScore.toFixed(2)}/100\n` +
             `AI signal: ${result?.action || 'HOLD'} (${result?.confidence || 0}%)\n` +
             `AI consensus: ${aiConsensusSummary(result)}\n` +
-            `${officialNewsContext(result)}${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}\n` +
+            `${officialNewsContext(result)}${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}${ultraReasoningText(result)}\n` +
             `Entry: $${finiteNumber(result?.entryPrice).toFixed(4)}\n` +
             `SL: $${finiteNumber(result?.stopLoss).toFixed(4)}\n` +
             `TP: $${finiteNumber(result?.takeProfit).toFixed(4)}\n` +
             `Risk/reward: ${finiteNumber(result?.riskReward).toFixed(2)}:1\n\n` +
             `Pattern context (${patterns.length}):\n${patternList}\n\n` +
             `Reason: ${result?.reasoning || 'No directional edge.'}\n` +
-            `RSI: ${finiteNumber(data?.rsi, 50).toFixed(2)} · Trend: ${techAnalysis?.marketTrend || 'NEUTRAL'}\n` +
+            `RSI: ${finiteNumber(data?.rsi, 50).toFixed(2)} Â· Trend: ${techAnalysis?.marketTrend || 'NEUTRAL'}\n` +
             `${new Date().toISOString()}`;
 
           await sendPatternChart(
@@ -1902,20 +1933,20 @@ function startLiveUpdates(ctx) {
       const openPositions = await orderManager.getOpenPositions();
       
       const statusMsg = `
-🔄 LIVE UPDATE - ${new Date().toISOString()}
+ðŸ”„ LIVE UPDATE - ${new Date().toISOString()}
 
-📊 ${pair} (${tf})
-💰 Price: $${data.price.toFixed(2)} ${data.change24h >= 0 ? '📈' : '📉'} ${data.change24h >= 0 ? '+' : ''}${data.change24h.toFixed(2)}%
+ðŸ“Š ${pair} (${tf})
+ðŸ’° Price: $${data.price.toFixed(2)} ${data.change24h >= 0 ? 'ðŸ“ˆ' : 'ðŸ“‰'} ${data.change24h >= 0 ? '+' : ''}${data.change24h.toFixed(2)}%
 
-📈 RSI: ${data.rsi.toFixed(2)} 
-📉 MACD: ${data.macd.toFixed(4)}
+ðŸ“ˆ RSI: ${data.rsi.toFixed(2)} 
+ðŸ“‰ MACD: ${data.macd.toFixed(4)}
 
-📊 Balance: $${status.balance?.toFixed(2) || 'N/A'}
-🎯 Target: ${targetLabel()}
-📈 Progress: ${status.progress?.toFixed(1) || 0}%
-📊 Positions: ${openPositions.length}
+ðŸ“Š Balance: $${status.balance?.toFixed(2) || 'N/A'}
+ðŸŽ¯ Target: ${targetLabel()}
+ðŸ“ˆ Progress: ${status.progress?.toFixed(1) || 0}%
+ðŸ“Š Positions: ${openPositions.length}
 
-⏱️ Next update in 30s...
+â±ï¸ Next update in 30s...
       `;
       
       if (ctx.session.statusMsgId) {
@@ -1946,8 +1977,8 @@ function startLiveUpdates(ctx) {
 Object.keys(TIMEFRAMES).forEach(tf => {
   bot.action(`tf_${tf}`, async (ctx) => {
     ctx.session.timeframe = tf;
-    await ctx.answerCbQuery(`⏱️ Timeframe set to ${tf}`);
-    await sendOrEdit(ctx, ctx.chat.id, null, `✅ Timeframe changed to ${tf}`);
+    await ctx.answerCbQuery(`â±ï¸ Timeframe set to ${tf}`);
+    await sendOrEdit(ctx, ctx.chat.id, null, `âœ… Timeframe changed to ${tf}`);
   });
 });
 
@@ -1973,10 +2004,10 @@ PAIRS.forEach(pair => {
       );
       
       const caption = `
-🤖 AI ANALYSIS - ${pair} (${tf})
+ðŸ¤– AI ANALYSIS - ${pair} (${tf})
 
 Signal: ${result?.action || 'HOLD'} (${result?.confidence || 0}%)
-${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}
+${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}${ultraReasoningText(result)}
 Entry: $${result?.entryPrice?.toFixed(2) || 'N/A'}
 SL: $${result?.stopLoss?.toFixed(2) || 'N/A'}
 TP: $${result?.takeProfit?.toFixed(2) || 'N/A'}
@@ -1984,42 +2015,42 @@ TP: $${result?.takeProfit?.toFixed(2) || 'N/A'}
 Patterns: ${patterns.map(p => p.name).join(', ') || 'None'}
 Reason: ${result?.reasoning || 'No clear signal'}
 
-📈 RSI: ${data.rsi?.toFixed(2) || 'N/A'}
-📉 Trend: ${techAnalysis.marketTrend || 'NEUTRAL'}
+ðŸ“ˆ RSI: ${data.rsi?.toFixed(2) || 'N/A'}
+ðŸ“‰ Trend: ${techAnalysis.marketTrend || 'NEUTRAL'}
 
-⏰ ${new Date().toISOString()}
+â° ${new Date().toISOString()}
           `;
       await sendPatternChart(ctx, base, data, patterns, result || { action: 'HOLD', confidence: 0 }, patternChartPath, caption, actionKeyboard);
     } catch (err) {
       logger.error('PAIR_SELECTION', err, { pair });
-      await ctx.reply(`❌ Error: ${err.message}`);
+      await ctx.reply(`âŒ Error: ${err.message}`);
     }
   });
 });
 
 bot.action('refresh_balance', async (ctx) => {
-  await ctx.answerCbQuery('🔄 Refreshing...');
+  await ctx.answerCbQuery('ðŸ”„ Refreshing...');
   await showBalance(ctx, ctx.session.balanceMsgId);
 });
 
 bot.action('view_portfolio', async (ctx) => {
-  await ctx.answerCbQuery('📊 Loading...');
+  await ctx.answerCbQuery('ðŸ“Š Loading...');
   await showPortfolio(ctx, ctx.session.portfolioMsgId);
 });
 
 bot.action('view_orders', async (ctx) => {
-  await ctx.answerCbQuery('📝 Loading...');
+  await ctx.answerCbQuery('ðŸ“ Loading...');
   await showOrders(ctx, ctx.session.ordersMsgId);
 });
 
 bot.action('action_buy', async (ctx) => {
   await ctx.answerCbQuery('Direct manual orders are disabled in V13');
-  await ctx.reply('V13.3 safety gate: the final AI selects 4x, 5x, 10x or 100x, and the hard risk engine may downgrade it. Use “Run AI approval” or /signal.');
+  await ctx.reply('V13.3 safety gate: the final AI selects 4x, 5x, 10x or 100x, and the hard risk engine may downgrade it. Use â€œRun AI approvalâ€ or /signal.');
 });
 
 bot.action('action_sell', async (ctx) => {
   await ctx.answerCbQuery('Direct manual orders are disabled in V13');
-  await ctx.reply('V13.3 safety gate: the final AI selects 4x, 5x, 10x or 100x, and the hard risk engine may downgrade it. Use “Run AI approval” or /signal.');
+  await ctx.reply('V13.3 safety gate: the final AI selects 4x, 5x, 10x or 100x, and the hard risk engine may downgrade it. Use â€œRun AI approvalâ€ or /signal.');
 });
 
 bot.action('action_ai_approval', async (ctx) => {
@@ -2033,12 +2064,12 @@ bot.action('action_forecast', async (ctx) => {
 });
 
 bot.action('update_chart', async (ctx) => {
-  await ctx.answerCbQuery('🔄 Updating chart...');
+  await ctx.answerCbQuery('ðŸ”„ Updating chart...');
   await handleChart(ctx);
 });
 
 bot.action('action_full_analysis', async (ctx) => {
-  await ctx.answerCbQuery('📊 Generating full analysis...');
+  await ctx.answerCbQuery('ðŸ“Š Generating full analysis...');
   await handleAnalysis(ctx);
 });
 
@@ -2075,7 +2106,7 @@ bot.catch(async (error, ctx) => {
   if (error?.name === 'TimeoutError' && ctx?.chat?.id) {
     try {
       await ctx.reply(
-        '⏳ This AI task is taking longer than expected, but the bot is still running. Check Status or Logs shortly.',
+        'â³ This AI task is taking longer than expected, but the bot is still running. Check Status or Logs shortly.',
         { parse_mode: undefined }
       );
     } catch (replyError) {
@@ -2095,20 +2126,20 @@ async function launchBot() {
       await bybit.waitForConnection();
     }
 
-    console.log('🚀 ULTRA AI TRADING BOT v13.6 STARTED');
-    console.log(`🏦 Bybit: ${bybit.isConnected ? '✅ Connected' : '❌ Disconnected'}`);
+    console.log('ðŸš€ ULTRA AI TRADING BOT v13.6 STARTED');
+    console.log(`ðŸ¦ Bybit: ${bybit.isConnected ? 'âœ… Connected' : 'âŒ Disconnected'}`);
     if (!bybit.isConnected && bybit.connectionError) {
       console.log(`   Error: ${bybit.connectionError}`);
     }
-    console.log(`🔑 Mode: ${bybit.getMode ? bybit.getMode().toUpperCase() : 'RO'}`);
-    console.log(`⏱️ Telegram timeout: ${Math.round(TELEGRAM_HANDLER_TIMEOUT / 1000)}s`);
+    console.log(`ðŸ”‘ Mode: ${bybit.getMode ? bybit.getMode().toUpperCase() : 'RO'}`);
+    console.log(`â±ï¸ Telegram timeout: ${Math.round(TELEGRAM_HANDLER_TIMEOUT / 1000)}s`);
     await ultimateAI.syncDailyPnl({ force: true });
-    console.log(`🎯 Daily target: ${dailyTargetSummary()}`);
-    console.log(`🏁 Balance target: ${targetLabel()}`);
+    console.log(`ðŸŽ¯ Daily target: ${dailyTargetSummary()}`);
+    console.log(`ðŸ Balance target: ${targetLabel()}`);
     console.log(`Monitoring ${AUTO_TRADE_COINS.length} coins; deep AI budget ${marketScanner.maxAIAnalyses} candidates/sweep`);
   } catch (error) {
     logger.error('BOT_LAUNCH', error);
-    console.error(`❌ Bot launch failed: ${error.message}`);
+    console.error(`âŒ Bot launch failed: ${error.message}`);
     process.exitCode = 1;
   }
 }

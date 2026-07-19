@@ -183,7 +183,7 @@ function compact(value, maxLength = 500) {
         maxArrayLength: 20,
         maxStringLength: 220
       });
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}â€¦` : text;
 }
 
 class ProfessionalLogger {
