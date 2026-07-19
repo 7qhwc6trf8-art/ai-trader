@@ -69,7 +69,12 @@ class UltimateAITrader {
         this.allowJudgeResolution = envFlag('ALLOW_JUDGE_RESOLUTION', true);
         this.minJudgeResolutionConfidence = Math.max(70, Math.min(100, Number(process.env.MIN_JUDGE_RESOLUTION_CONFIDENCE) || 82));
         this.claudeApiMode = String(process.env.CLAUDE_API_MODE || 'direct').trim().toLowerCase();
-        this.claudeTimeoutMs = Math.min(120000, Math.max(15000, Number(process.env.CLAUDE_TIMEOUT_MS) || 60000));
+        this.claudeTimeoutMs = Math.min(120000, Math.max(15000, Number(process.env.CLAUDE_TIMEOUT_MS) || 90000));
+        this.claudeRetryCount = Math.min(5, Math.max(1, Number(process.env.CLAUDE_RETRY_COUNT) || 3));
+        this.skipAIWhenPortfolioFull = envFlag('SKIP_AI_WHEN_PORTFOLIO_FULL', true);
+        this.showRepeatedHoldNotifications = envFlag('SHOW_REPEATED_HOLD_NOTIFICATIONS', false);
+        this.holdNotificationCooldownMs = Math.max(60000, (Number(process.env.HOLD_NOTIFICATION_COOLDOWN_MINUTES) || 60) * 60 * 1000);
+        this.lastHoldNotifications = new Map();
         this.lastEnsemble = null;
         this.providerHealth = {
             claude: { configured: claudeConfigured, ok: null, error: null, checkedAt: null, latencyMs: null },
@@ -973,6 +978,19 @@ class UltimateAITrader {
                 ? ((this.currentEquity - this.startingBalance) / this.requiredGain) * 100
                 : 0;
 
+            const openPositions = Array.isArray(portfolio?.positions) ? portfolio.positions : [];
+            if (this.skipAIWhenPortfolioFull && openPositions.length >= this.maxPositions) {
+                const reason = `Portfolio capacity reached: ${openPositions.length}/${this.maxPositions}. AI analysis skipped.`;
+                this.isTrading = false;
+                logger.step('ANALYZE_AND_TRADE_SKIP', { coin, reason: 'Portfolio full', openPositions: openPositions.length });
+                return this.createHoldDecision(reason, data, 0, {
+                    portfolioCapacityReached: true,
+                    suppressNotification: true,
+                    executionBlocked: true,
+                    executionReason: reason
+                });
+            }
+
             const techAnalysis = this.calculateAllIndicators(data);
             logger.indicators(coin, techAnalysis);
 
@@ -1128,7 +1146,9 @@ class UltimateAITrader {
                     executionResult: executionResult || null
                 };
             } else {
-                await this.sendNotification(ctx, ' HOLD', decision.reasoning || 'No clear signal.');
+                if (this.shouldNotifyHold(coin, decision)) {
+                    await this.sendNotification(ctx, ' HOLD', decision.reasoning || 'No clear signal.');
+                }
                 this.isTrading = false;
                 logger.step('ANALYZE_AND_TRADE_HOLD', { coin, reasoning: decision.reasoning });
                 return decision;
@@ -1192,7 +1212,7 @@ class UltimateAITrader {
             patterns.push({
                 name,
                 type,
-                strength: Math.round(strength * weight),
+                strength: Math.max(0, Math.min(100, Math.round(strength * weight))),
                 visualization: visualization || null
             });
         };
@@ -1978,15 +1998,18 @@ ANALYSIS RULES:
             // the JSON payload and prevents deprecated sampling fields from
             // being injected by an outdated wrapper or copied helper.
             if (this.claudeApiMode !== 'sdk') {
-                response = await this.fetchJSON('https://api.anthropic.com/v1/messages', {
-                    method: 'POST',
-                    headers: {
-                        'x-api-key': process.env.ANTHROPIC_API_KEY,
-                        'anthropic-version': '2023-06-01',
-                        'content-type': 'application/json'
-                    },
-                    body: JSON.stringify(payload)
-                }, this.claudeTimeoutMs);
+                response = await this.withRetry(
+                    () => this.fetchJSON('https://api.anthropic.com/v1/messages', {
+                        method: 'POST',
+                        headers: {
+                            'x-api-key': process.env.ANTHROPIC_API_KEY,
+                            'anthropic-version': '2023-06-01',
+                            'content-type': 'application/json'
+                        },
+                        body: JSON.stringify(payload)
+                    }, this.claudeTimeoutMs),
+                    this.claudeRetryCount
+                );
             } else {
                 if (!this.anthropic) {
                     throw new Error('Claude SDK mode selected, but @anthropic-ai/sdk is unavailable');
@@ -2749,6 +2772,49 @@ MAKE DECISION. RETURN ONLY JSON.`;
             await this.sendNotification(ctx, ' Trade Error', error.message);
             return { success: false };
         }
+    }
+
+    shouldNotifyHold(coin, decision = {}) {
+        if (decision?.suppressNotification) return false;
+        if (this.showRepeatedHoldNotifications) return true;
+
+        const key = normalizeCoin(coin);
+        const compactReason = String(decision.reasoning || decision.executionReason || 'No clear signal.')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 600);
+        const signature = [
+            String(decision.action || 'HOLD'),
+            String(decision.ensemble?.claude?.action || ''),
+            String(decision.ensemble?.deepseek?.action || ''),
+            compactReason
+        ].join('|');
+        const previous = this.lastHoldNotifications.get(key);
+        const now = Date.now();
+
+        if (previous && previous.signature === signature && now - previous.timestamp < this.holdNotificationCooldownMs) {
+            return false;
+        }
+
+        this.lastHoldNotifications.set(key, { signature, timestamp: now });
+        return true;
+    }
+
+    async withRetry(operation, attempts = 3, baseDelayMs = 1500) {
+        let lastError;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return await operation(attempt);
+            } catch (error) {
+                lastError = error;
+                const status = Number(error?.status || 0);
+                const retryable = !status || status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+                if (!retryable || attempt >= attempts) break;
+                const delay = baseDelayMs * attempt;
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+        throw lastError;
     }
 
     // ==================== NOTIFICATIONS ====================

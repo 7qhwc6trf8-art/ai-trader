@@ -131,7 +131,7 @@ class PatternDetector {
     const closes = candles.map(c => Number(c[4]));
     const highs = candles.map(c => Number(c[2]));
     const lows = candles.map(c => Number(c[3]));
-    const opens = candles.map(c => Number(c[0]));
+    const opens = candles.map(c => Number(c[1]));
 
     const lastIndex = candles.length - 1;
 
@@ -375,8 +375,15 @@ class PatternDetector {
   // ============================================================
 
   createPattern(pattern, visualization) {
+    const clampPercent = value => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
+    };
+
     return {
       ...pattern,
+      confidence: clampPercent(pattern.confidence),
+      strength: clampPercent(pattern.strength ?? pattern.confidence),
       visualization
     };
   }
