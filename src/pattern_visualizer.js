@@ -814,6 +814,93 @@ class PatternVisualizer {
         ctx.setLineDash([]);
     }
 
+    drawFibonacciLevels(ctx, fibonacci, minPrice, priceRange) {
+        const levels = Array.isArray(fibonacci?.retracements)
+            ? fibonacci.retracements
+            : [];
+        const safeMinPrice = Number(minPrice);
+        const safePriceRange = Number(priceRange);
+
+        if (
+            levels.length === 0 ||
+            !Number.isFinite(safeMinPrice) ||
+            !Number.isFinite(safePriceRange) ||
+            safePriceRange <= 0
+        ) {
+            return;
+        }
+
+        const visibleRatios = [0.236, 0.382, 0.5, 0.618, 0.786];
+        const isVisibleRatio = ratio =>
+            visibleRatios.some(expected => Math.abs(ratio - expected) < 0.0005);
+
+        const formatPrice = value => {
+            const number = Number(value);
+            if (!Number.isFinite(number)) return 'N/A';
+            if (Math.abs(number) >= 1000) return number.toFixed(2);
+            if (Math.abs(number) >= 1) return number.toFixed(4);
+            return number.toFixed(6);
+        };
+
+        ctx.save();
+
+        try {
+            for (const level of levels) {
+                const ratio = Number(level?.ratio);
+                const levelPrice = Number(level?.price);
+
+                if (
+                    !Number.isFinite(ratio) ||
+                    !Number.isFinite(levelPrice) ||
+                    !isVisibleRatio(ratio)
+                ) {
+                    continue;
+                }
+
+                const normalized = (levelPrice - safeMinPrice) / safePriceRange;
+                const y = this.padding.top + this.chartHeight - normalized * this.chartHeight;
+
+                // Do not draw malformed or out-of-chart levels.
+                if (
+                    !Number.isFinite(y) ||
+                    y < this.padding.top - 1 ||
+                    y > this.padding.top + this.chartHeight + 1
+                ) {
+                    continue;
+                }
+
+                const isGoldenRatio = Math.abs(ratio - 0.618) < 0.0005;
+                const color = isGoldenRatio
+                    ? 'rgba(251, 191, 36, 0.95)'
+                    : 'rgba(148, 163, 184, 0.48)';
+
+                ctx.strokeStyle = color;
+                ctx.lineWidth = isGoldenRatio ? 2.2 : 1;
+                ctx.setLineDash(isGoldenRatio ? [10, 5] : [6, 6]);
+                ctx.beginPath();
+                ctx.moveTo(this.padding.left, y);
+                ctx.lineTo(this.width - this.padding.right, y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                const label = `Fib ${ratio.toFixed(3)} • $${formatPrice(levelPrice)}`;
+                ctx.font = `${isGoldenRatio ? 'bold ' : ''}11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+                const labelWidth = ctx.measureText(label).width;
+                const labelX = this.padding.left + 8;
+                const labelY = Math.max(this.padding.top + 13, y - 6);
+
+                ctx.fillStyle = 'rgba(10, 14, 23, 0.82)';
+                ctx.fillRect(labelX - 4, labelY - 11, labelWidth + 8, 15);
+                ctx.fillStyle = color;
+                ctx.textAlign = 'left';
+                ctx.fillText(label, labelX, labelY);
+            }
+        } finally {
+            ctx.setLineDash([]);
+            ctx.restore();
+        }
+    }
+
     drawStatusBox(ctx, coin, patterns, decision) {
         const boxX = 30;
         const boxY = 70;
