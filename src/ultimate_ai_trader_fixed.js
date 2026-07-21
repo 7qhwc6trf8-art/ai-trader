@@ -62,10 +62,11 @@ class UltimateAITrader {
         this.ensembleJudge = ['claude', 'deepseek'].includes(configuredJudge)
             ? configuredJudge
             : 'claude';
-        // In ensemble mode both independent providers must succeed by default.
-        // This prevents a one-provider outage from silently becoming a live trade.
-        this.requireCompleteEnsemble = envFlag('REQUIRE_COMPLETE_ENSEMBLE', true);
-        this.allowPartialEnsemble = envFlag('ALLOW_PARTIAL_ENSEMBLE', false);
+        // Keep both providers enabled, but never stop analysis only because
+        // Claude is unavailable. DeepSeek becomes the standalone fallback.
+        // These flags remain for status/backward compatibility.
+        this.requireCompleteEnsemble = envFlag('REQUIRE_COMPLETE_ENSEMBLE', false);
+        this.allowPartialEnsemble = envFlag('ALLOW_PARTIAL_ENSEMBLE', true);
         this.allowJudgeResolution = envFlag('ALLOW_JUDGE_RESOLUTION', true);
         this.minJudgeResolutionConfidence = Math.max(70, Math.min(100, Number(process.env.MIN_JUDGE_RESOLUTION_CONFIDENCE) || 82));
         this.claudeApiMode = String(process.env.CLAUDE_API_MODE || 'direct').trim().toLowerCase();
@@ -2190,41 +2191,71 @@ ANALYSIS RULES:
         const claudeReview = claude || { error: claudeError || 'Claude unavailable' };
         const deepseekReview = deepseek || { error: deepseekError || 'DeepSeek unavailable' };
 
-        if ((!claude || !deepseek) && this.requireCompleteEnsemble && !this.allowPartialEnsemble) {
-            const unavailable = !claude ? `Claude: ${claudeError || 'unavailable'}` : `DeepSeek: ${deepseekError || 'unavailable'}`;
-            const hold = {
-                action: 'HOLD',
-                sentiment: 'NEUTRAL',
-                confidence: 0,
-                entryPrice: 0,
-                stopLoss: 0,
-                takeProfit: 0,
-                positionSizePercent: 0,
-                riskReward: 0,
-                marketCondition: 'RANGING',
-                signals: [],
-                warnings: [`Incomplete AI ensemble — ${unavailable}`],
-                approveLeverage: false,
-                recommendedLeverage: 0,
-                approvedLeverage: 0,
-                leverageApproval: 'REJECTED',
-                leverageReason: 'Both AI providers are required in ensemble mode.',
-                tpEtaMinutes: 0,
-                forecastBias: 'NEUTRAL',
-                reasoning: `Execution blocked because the ensemble is incomplete. ${unavailable}`,
-                source: 'dual-ai-incomplete-hold'
+        // Claude failure must never force HOLD. When Claude is unavailable,
+        // continue with the already completed DeepSeek review as the final
+        // standalone decision. Claude code remains enabled for later requests.
+        if (!claude && deepseek) {
+            const finalDecision = {
+                ...deepseek,
+                warnings: [
+                    ...(Array.isArray(deepseek.warnings) ? deepseek.warnings : []),
+                    `Claude unavailable; DeepSeek-only fallback used: ${claudeError || 'unknown Claude error'}`
+                ]
             };
+
             this.lastEnsemble = {
-                status: 'blocked-incomplete',
-                judge: null,
+                status: 'deepseek-fallback',
+                judge: 'deepseek',
                 judgeError: null,
-                agreement: false,
-                technicalAgreement: false,
+                agreement: null,
+                judgeResolved: false,
+                technicalAgreement: null,
                 claude: claudeReview,
                 deepseek: deepseekReview,
-                final: hold
+                final: finalDecision
             };
-            return { ...hold, ensemble: this.lastEnsemble };
+
+            logger.action('CLAUDE_FAILED_DEEPSEEK_FALLBACK', {
+                claudeError,
+                action: finalDecision.action,
+                confidence: finalDecision.confidence
+            });
+
+            return {
+                ...finalDecision,
+                source: 'deepseek-fallback-after-claude-failure',
+                ensemble: this.lastEnsemble
+            };
+        }
+
+        // Preserve service when DeepSeek alone fails. Claude may still provide
+        // a valid decision, but no dual-provider agreement is claimed.
+        if (claude && !deepseek) {
+            const finalDecision = {
+                ...claude,
+                warnings: [
+                    ...(Array.isArray(claude.warnings) ? claude.warnings : []),
+                    `DeepSeek unavailable; Claude-only result used: ${deepseekError || 'unknown DeepSeek error'}`
+                ]
+            };
+
+            this.lastEnsemble = {
+                status: 'claude-only',
+                judge: 'claude',
+                judgeError: null,
+                agreement: null,
+                judgeResolved: false,
+                technicalAgreement: null,
+                claude: claudeReview,
+                deepseek: deepseekReview,
+                final: finalDecision
+            };
+
+            return {
+                ...finalDecision,
+                source: 'claude-only-after-deepseek-failure',
+                ensemble: this.lastEnsemble
+            };
         }
 
         const judgeSystem = `${systemPrompt}
@@ -2323,7 +2354,24 @@ Produce the final dual-AI decision. Explain in reasoning how the two reviews and
 
         try {
             if (this.aiProvider === 'claude') {
-                return await this.requestClaudeAnalysis(prompt, systemPrompt);
+                try {
+                    return await this.requestClaudeAnalysis(prompt, systemPrompt);
+                } catch (claudeError) {
+                    logger.action('CLAUDE_FAILED_DEEPSEEK_FALLBACK', {
+                        coin,
+                        claudeError: this.providerErrorMessage(claudeError)
+                    });
+                    const deepseekDecision = await this.requestDeepSeekAnalysis(prompt, systemPrompt);
+                    return {
+                        ...deepseekDecision,
+                        source: 'deepseek-fallback-after-claude-failure',
+                        fallback: {
+                            from: 'claude',
+                            to: 'deepseek',
+                            reason: this.providerErrorMessage(claudeError)
+                        }
+                    };
+                }
             }
             if (this.aiProvider === 'deepseek') {
                 return await this.requestDeepSeekAnalysis(prompt, systemPrompt);
