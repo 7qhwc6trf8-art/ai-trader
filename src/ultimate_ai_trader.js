@@ -916,9 +916,9 @@ class UltimateAITrader {
         }
 
         const positions = Array.isArray(portfolio?.positions) ? portfolio.positions : [];
-        if (positions.some(position => sameCoin(position?.coin || position?.symbol, coin))) {
-            return `A ${coin} position is already open.`;
-        }
+        // if (positions.some(position => sameCoin(position?.coin || position?.symbol, coin))) {
+        //     return `A ${coin} position is already open.`;
+        // }
 
         if (positions.length >= this.maxPositions) {
             return `Maximum open positions reached: ${positions.length}/${this.maxPositions}.`;
