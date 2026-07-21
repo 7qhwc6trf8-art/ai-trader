@@ -1977,17 +1977,17 @@ async function runFullMarketScan(ctx) {
                 : 'AI SIGNAL NOT EXECUTED';
           const patternList = patterns.slice(0, 12).map(pattern => `• ${pattern.name}`).join('\n') || '• None';
           const caption = `${title} - ${coin}/USDT (${tf})\n\n` +
-            `Pre-scan score: ${scanScore.toFixed(2)}/100\n` +
-            `AI signal: ${result?.action || 'HOLD'} (${result?.confidence || 0}%)\n` +
-            `AI consensus: ${aiConsensusSummary(result)}\n` +
+            `**Pre-scan score:** ${scanScore.toFixed(2)}/100\n` +
+            `**AI signal:** ${result?.action || 'HOLD'} (${result?.confidence || 0}%)\n` +
+            `**AI consensus:** ${aiConsensusSummary(result)}\n` +
             `${officialNewsContext(result)}${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}\n` +
-            `Entry: $${finiteNumber(result?.entryPrice).toFixed(4)}\n` +
-            `SL: $${finiteNumber(result?.stopLoss).toFixed(4)}\n` +
-            `TP: $${finiteNumber(result?.takeProfit).toFixed(4)}\n` +
-            `Risk/reward: ${finiteNumber(result?.riskReward).toFixed(2)}:1\n\n` +
-            `Pattern context (${patterns.length}):\n${patternList}\n\n` +
-            `Reason: ${result?.reasoning || 'No directional edge.'}\n` +
-            `RSI: ${finiteNumber(data?.rsi, 50).toFixed(2)} · Trend: ${techAnalysis?.marketTrend || 'NEUTRAL'}\n` +
+            `**Entry:** $${finiteNumber(result?.entryPrice).toFixed(4)}\n` +
+            `**SL:** $${finiteNumber(result?.stopLoss).toFixed(4)}\n` +
+            `**TP:** $${finiteNumber(result?.takeProfit).toFixed(4)}\n` +
+            `**Risk/reward:** ${finiteNumber(result?.riskReward).toFixed(2)}:1\n\n` +
+            `**Pattern context (${patterns.length}):**\n${patternList}\n\n` +
+            `**Reason:** ${result?.reasoning || 'No directional edge.'}\n` +
+            `**RSI:** ${finiteNumber(data?.rsi, 50).toFixed(2)} · Trend: ${techAnalysis?.marketTrend || 'NEUTRAL'}\n\n` +
             `${new Date().toISOString()}`;
 
           await sendPatternChart(
