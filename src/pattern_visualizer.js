@@ -925,6 +925,110 @@ class PatternVisualizer {
         ctx.closePath();
     }
 
+    drawFibonacciLevels(ctx, fibonacci, minPrice, priceRange) {
+        if (
+            !ctx ||
+            !Number.isFinite(minPrice) ||
+            !Number.isFinite(priceRange) ||
+            priceRange <= 0
+        ) {
+            return;
+        }
+
+        const levels = Array.isArray(fibonacci?.retracements)
+            ? fibonacci.retracements
+            : [];
+
+        if (levels.length === 0) {
+            return;
+        }
+
+        ctx.save();
+
+        levels.forEach((level) => {
+            const levelPrice = Number(level?.price);
+
+            if (
+                !Number.isFinite(levelPrice) ||
+                levelPrice < minPrice ||
+                levelPrice > (minPrice + priceRange)
+            ) {
+                return;
+            }
+
+            const rawRatio = Number(
+                level?.ratio ??
+                level?.level ??
+                level?.value ??
+                level?.percentage
+            );
+
+            const ratioText = Number.isFinite(rawRatio)
+                ? (rawRatio <= 1
+                    ? `${(rawRatio * 100).toFixed(1)}%`
+                    : `${rawRatio.toFixed(1)}%`)
+                : "Fib";
+
+            const y =
+                this.padding.top +
+                this.chartHeight -
+                ((levelPrice - minPrice) / priceRange) * this.chartHeight;
+
+            if (!Number.isFinite(y)) {
+                return;
+            }
+
+            // Horizontal line
+            ctx.strokeStyle = "rgba(79, 195, 247, 0.40)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(this.padding.left, y);
+            ctx.lineTo(this.width - this.padding.right, y);
+            ctx.stroke();
+
+            // Label
+            const decimals =
+                levelPrice >= 100
+                    ? 2
+                    : levelPrice >= 1
+                        ? 4
+                        : 6;
+
+            const label = `${ratioText}  $${levelPrice.toFixed(decimals)}`;
+
+            ctx.font =
+                '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+
+            const labelWidth = ctx.measureText(label).width;
+            const labelX =
+                this.width - this.padding.right - labelWidth - 8;
+
+            const labelY = Math.max(
+                this.padding.top + 12,
+                Math.min(
+                    this.padding.top + this.chartHeight - 4,
+                    y - 4
+                )
+            );
+
+            ctx.fillStyle = "rgba(10, 14, 23, 0.82)";
+            ctx.fillRect(
+                labelX - 5,
+                labelY - 11,
+                labelWidth + 10,
+                15
+            );
+
+            ctx.fillStyle = "#4fc3f7";
+            ctx.textAlign = "left";
+            ctx.fillText(label, labelX, labelY);
+        });
+
+        ctx.setLineDash([]);
+        ctx.restore();
+    }
+
     generateEmptyChart(ctx, coin) {
         ctx.fillStyle = '#0a0e17';
         ctx.fillRect(0, 0, this.width, this.height);
