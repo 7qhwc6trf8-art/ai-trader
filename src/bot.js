@@ -84,6 +84,42 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function formatBytes(value) {
+  const bytes = finiteNumber(value);
+  if (bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / (1024 ** index)).toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
+}
+
+function formatDuration(secondsValue) {
+  let seconds = Math.max(0, Math.floor(finiteNumber(secondsValue)));
+  const days = Math.floor(seconds / 86400);
+  seconds %= 86400;
+  const hours = Math.floor(seconds / 3600);
+  seconds %= 3600;
+  const minutes = Math.floor(seconds / 60);
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours || days) parts.push(`${hours}h`);
+  parts.push(`${minutes}m`);
+  return parts.join(' ');
+}
+
+function formatTokens(value) {
+  const tokens = finiteNumber(value);
+  if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(2)}M`;
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`;
+  return String(Math.round(tokens));
+}
+
+function healthIcon(status) {
+  if (status === 'healthy') return '🟢';
+  if (status === 'warning' || status === 'degraded' || status === 'cooldown') return '🟡';
+  if (status === 'critical' || status === 'unhealthy') return '🔴';
+  return '⚪';
+}
+
 function compactText(value, maxLength = 120) {
   let textValue;
   if (typeof value === 'string') {
@@ -219,7 +255,7 @@ let statusMsgId = null;
 // ==================== KEYBOARDS ====================
 
 const mainKeyboard = Markup.keyboard([
-  ['🧠 AI Engine'],
+  ['🧠 AI Engine', '🩺 Health'],
   ['📊 Chart', '📈 RSI', '📉 MACD'],
   ['🔮 Forecast', '🤖 AI Signal', '🧠 Full Analysis'],
   ['💰 Balance', '💼 Portfolio'],
@@ -804,14 +840,17 @@ async function showPositions(ctx) {
 }
 
 async function showAIStatus(ctx) {
+  if (ultimateAI.refreshSystemHealth) {
+    await ultimateAI.refreshSystemHealth().catch(() => null);
+  }
   const ai = ultimateAI.getAIStatus();
   const providerName = ai.provider === 'claude'
     ? 'Claude'
     : ai.provider === 'ensemble'
       ? 'Claude × DeepSeek Ensemble'
-    : ai.provider === 'deepseek'
-      ? 'DeepSeek'
-      : 'Claude + DeepSeek';
+      : ai.provider === 'deepseek'
+        ? 'DeepSeek'
+        : 'Claude + DeepSeek';
   const last = ai.ensemble;
   const reviewItem = item => {
     if (item?.error) return `❌ ${compactText(item.error, 120)}`;
@@ -826,44 +865,57 @@ async function showAIStatus(ctx) {
         ? 'Providers differ — judge resolved it'
         : 'Not fully checked';
   const ensembleResult = last
-    ? `
-*Last ensemble review*
-• Claude: ${reviewItem(last.claude)}
-• DeepSeek: ${reviewItem(last.deepseek)}
-• Final: ${reviewItem(last.final)}
-• Ensemble state: ${ensembleState}
-`
+    ? `\nLast ensemble review\n• Claude: ${reviewItem(last.claude)}\n• DeepSeek: ${reviewItem(last.deepseek)}\n• Final: ${reviewItem(last.final)}\n• Ensemble state: ${ensembleState}\n`
     : '';
 
+  const providerLine = (name, health) => {
+    const cooldown = finiteNumber(health?.cooldownRemainingMs);
+    const latency = Number.isFinite(Number(health?.latencyMs)) ? ` · ${health.latencyMs}ms` : '';
+    const detail = cooldown > 0
+      ? `cooldown ${Math.ceil(cooldown / 60000)}m · ${compactText(health?.cooldownReason || health?.error, 100)}`
+      : health?.error
+        ? compactText(health.error, 100)
+        : `${health?.status || 'unknown'}${latency}`;
+    return `${healthIcon(health?.status)} ${name}: ${detail}`;
+  };
+
+  const usage = ai.usage?.session?.totals || {};
+  const dailyUsage = ai.usage?.daily?.totals || {};
   const message = `
-🧠 *AI ANALYSIS ENGINE*
+🧠 AI ANALYSIS ENGINE
 ━━━━━━━━━━━━━━━━━━
 
-${ai.ready ? '🟢' : '🔴'} *Status:* ${ai.ready ? 'Ready' : 'Setup required'}
-✨ *Provider:* ${providerName}
-⚙️ *Model:* ${ai.model}
-🎯 *Decision mode:* AI chooses BUY / SELL / HOLD
-⚖️ *Pipeline:* ${ai.provider === 'ensemble' ? 'Claude + DeepSeek independent reviews → final AI judge' : 'Single AI provider'}
-🛡️ *Complete ensemble required:* ${ai.requireCompleteEnsemble && !ai.allowPartialEnsemble ? 'Yes — partial results are HOLD' : 'No'}
-🔌 *Claude transport:* ${ai.claudeApiMode || 'direct'}
-📊 *Confidence gate:* ${ultimateAI.minimumExecutionConfidence > 0 ? `${ultimateAI.minimumExecutionConfidence}%` : 'Disabled — AI decision used directly'}
-🧩 *Patterns:* Context only, never a manual requirement
+${ai.ready ? (ai.degraded ? '🟡' : '🟢') : '🔴'} Status: ${ai.ready ? (ai.degraded ? 'Degraded / fallback active' : 'Ready') : 'Unavailable'}
+✨ Provider: ${providerName}
+⚙️ Model: ${ai.model}
+⚖️ Pipeline: ${ai.provider === 'ensemble' ? 'Independent reviews → final judge' : 'Single provider with fallback'}
+🔌 Claude transport: ${ai.claudeApiMode || 'direct'}
+📊 Confidence gate: ${ultimateAI.minimumExecutionConfidence > 0 ? `${ultimateAI.minimumExecutionConfidence}%` : 'Disabled'}
+
+PROVIDER HEALTH
+${providerLine('Claude', ai.providerHealth?.claude)}
+${providerLine('DeepSeek', ai.providerHealth?.deepseek)}
+
+SESSION AI USAGE
+• Logical calls: ${finiteNumber(usage.logicalCalls)}
+• API requests: ${finiteNumber(usage.requests)}
+• Success rate: ${finiteNumber(usage.successRatePct).toFixed(1)}%
+• Retries: ${finiteNumber(usage.retries)}
+• Input tokens: ${formatTokens(usage.tokens?.input)}
+• Output tokens: ${formatTokens(usage.tokens?.output)}
+• Reasoning tokens: ${formatTokens(usage.tokens?.reasoning)}
+• Cache read/write: ${formatTokens(usage.tokens?.cacheRead)} / ${formatTokens(usage.tokens?.cacheWrite)}
+• Estimated cost: $${finiteNumber(usage.estimatedCostUsd).toFixed(6)}${ai.usage?.pricingConfigured?.claude || ai.usage?.pricingConfigured?.deepseek ? '' : ' (pricing env not set)'}
+
+DAILY AI USAGE
+• Requests: ${finiteNumber(dailyUsage.requests)}
+• Total tokens: ${formatTokens(dailyUsage.tokens?.total)}
+• Estimated cost: $${finiteNumber(dailyUsage.estimatedCostUsd).toFixed(6)}
 
 ${ai.setupHint}
-${ensembleResult}
+${ensembleResult}`;
 
-To use the mixed analysis:
-\`AI_PROVIDER=ensemble\`
-\`ANTHROPIC_API_KEY=your_key\`
-\`DEEPSEEK_API_KEY=your_key\`
-\`CLAUDE_MODEL=claude-sonnet-5\`
-\`DEEPSEEK_MODEL=deepseek-v4-pro\`
-\`ENSEMBLE_JUDGE=claude\` # or deepseek
-\`REQUIRE_COMPLETE_ENSEMBLE=true\`
-\`CLAUDE_API_MODE=direct\`
-  `;
-
-  await sendOrEdit(ctx, ctx.chat.id, null, message);
+  await sendOrEdit(ctx, ctx.chat.id, null, message, { parse_mode: false });
 }
 
 // ==================== COMMANDS ====================
@@ -988,6 +1040,7 @@ ${positionsText}
 📋 Commands:
 /balance - View balance
 /ai - View AI provider
+/health - Full server and AI health
 /portfolio - View portfolio
 /performance - Trading performance
 /positions - View open positions
@@ -1308,7 +1361,157 @@ ${providerLine('DeepSeek', ultimateAI.deepseekModel, aiHealth?.deepseek)}
   }
 }
 
+async function handleHealth(ctx) {
+  logger.command('FULL_HEALTH', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
+  const loadingId = await sendOrEdit(
+    ctx,
+    ctx.chat.id,
+    null,
+    'Collecting server, process, AI and trading health...',
+    { parse_mode: false }
+  );
+
+  try {
+    const health = await ultimateAI.getFullHealthStatus({
+      checkProviders: true,
+      force: true,
+      forceProviderCheck: false
+    });
+    const server = health.server || {};
+    const cpu = server.cpu || {};
+    const memory = server.memory || {};
+    const processMemory = memory.process || {};
+    const disk = server.disk || {};
+    const network = server.network || {};
+    const proc = server.process || {};
+    const uptime = server.uptime || {};
+
+    const serverMessage = `
+🩺 FULL SERVER HEALTH
+━━━━━━━━━━━━━━━━━━
+
+${healthIcon(health.overall)} Overall: ${String(health.overall || 'unknown').toUpperCase()}
+${healthIcon(server.status)} Server: ${String(server.status || 'unknown').toUpperCase()}
+🕒 Checked: ${health.checkedAt}
+
+SERVER
+• Host: ${server.hostname || 'Unknown'}
+• OS: ${server.osType || server.platform || 'Unknown'} ${server.osRelease || ''} (${server.architecture || ''})
+• Node: ${server.nodeVersion || process.version}
+• PID: ${server.pid || process.pid}
+• PM2: ${proc.pm2?.enabled ? `${proc.pm2.name || 'app'} · id ${proc.pm2.id ?? 'N/A'} · instance ${proc.pm2.instanceId ?? 'N/A'}` : 'Not detected'}
+• Server uptime: ${formatDuration(uptime.serverSeconds)}
+• Process uptime: ${formatDuration(uptime.processSeconds)}
+
+CPU
+• Model: ${compactText(cpu.model || 'Unknown', 90)}
+• Logical cores: ${finiteNumber(cpu.logicalCores)}
+• Server usage: ${finiteNumber(cpu.systemUsagePct).toFixed(1)}%
+• Bot process usage: ${finiteNumber(cpu.processUsagePct).toFixed(1)}%
+• Load 1m / 5m / 15m: ${finiteNumber(cpu.loadAverage1m).toFixed(2)} / ${finiteNumber(cpu.loadAverage5m).toFixed(2)} / ${finiteNumber(cpu.loadAverage15m).toFixed(2)}
+
+MEMORY
+• Server: ${formatBytes(memory.usedBytes)} / ${formatBytes(memory.totalBytes)} (${finiteNumber(memory.usagePct).toFixed(1)}%)
+• Free: ${formatBytes(memory.freeBytes)}
+• Process RSS: ${formatBytes(processMemory.rssBytes)}
+• Heap: ${formatBytes(processMemory.heapUsedBytes)} / ${formatBytes(processMemory.heapTotalBytes)} (${finiteNumber(processMemory.heapUsagePct).toFixed(1)}%)
+• External / buffers: ${formatBytes(processMemory.externalBytes)} / ${formatBytes(processMemory.arrayBuffersBytes)}
+
+DISK
+• Path: ${disk.path || 'Unavailable'}
+• Used: ${disk.available ? `${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)} (${finiteNumber(disk.usagePct).toFixed(1)}%)` : compactText(disk.error || 'Unavailable', 120)}
+• Free: ${disk.available ? formatBytes(disk.freeBytes) : 'N/A'}
+
+NETWORK
+• Received / sent: ${formatBytes(network.rxBytes)} / ${formatBytes(network.txBytes)}
+• Current RX / TX: ${formatBytes(network.rxBytesPerSecond)}/s / ${formatBytes(network.txBytesPerSecond)}/s
+• Interfaces: ${Object.keys(network.interfaces || {}).join(', ') || 'Unavailable'}
+
+PROCESS
+• Event-loop lag: ${finiteNumber(proc.eventLoopLagMs).toFixed(2)}ms
+• Active handles / requests: ${proc.activeHandles ?? 'N/A'} / ${proc.activeRequests ?? 'N/A'}
+• WebSocket: ${health.trading?.websocketActive ? 'Active' : 'Inactive'}
+• Trading worker: ${health.trading?.isTrading ? 'Busy' : 'Idle'}`;
+
+    await sendOrEdit(ctx, ctx.chat.id, loadingId, serverMessage, { parse_mode: false });
+
+    const ai = health.ai || ultimateAI.getAIStatus();
+    const usage = ai.usage || {};
+    const session = usage.session?.totals || {};
+    const daily = usage.daily?.totals || {};
+    const lifetime = usage.lifetime?.totals || {};
+    const providerDetails = (provider, label) => {
+      const healthInfo = ai.providerHealth?.[provider] || {};
+      const metrics = usage.session?.providers?.[provider] || {};
+      const cooldownMinutes = Math.ceil(finiteNumber(healthInfo.cooldownRemainingMs) / 60000);
+      const statusDetail = cooldownMinutes > 0
+        ? `Cooldown ${cooldownMinutes}m · ${compactText(healthInfo.cooldownReason || healthInfo.error, 110)}`
+        : healthInfo.error
+          ? compactText(healthInfo.error, 110)
+          : `${healthInfo.status || 'unknown'} · ${finiteNumber(healthInfo.latencyMs)}ms`;
+      return `${healthIcon(healthInfo.status)} ${label} (${metrics.model || healthInfo.model || 'model'}): ${statusDetail}
+  Requests ${finiteNumber(metrics.requests)} · success ${finiteNumber(metrics.successRatePct).toFixed(1)}% · retries ${finiteNumber(metrics.retries)}
+  Tokens in/out/reasoning ${formatTokens(metrics.tokens?.input)} / ${formatTokens(metrics.tokens?.output)} / ${formatTokens(metrics.tokens?.reasoning)}
+  Cache read/write ${formatTokens(metrics.tokens?.cacheRead)} / ${formatTokens(metrics.tokens?.cacheWrite)} · cost $${finiteNumber(metrics.estimatedCostUsd).toFixed(6)}`;
+    };
+
+    const aiMessage = `
+🤖 AI, TOKEN AND TRADING HEALTH
+━━━━━━━━━━━━━━━━━━
+
+${ai.ready ? (ai.degraded ? '🟡' : '🟢') : '🔴'} AI engine: ${ai.ready ? (ai.degraded ? 'DEGRADED / FALLBACK' : 'READY') : 'UNAVAILABLE'}
+• Provider mode: ${ai.provider}
+• Model pipeline: ${ai.model}
+• Judge: ${ai.ensembleJudge}
+
+${providerDetails('claude', 'Claude')}
+
+${providerDetails('deepseek', 'DeepSeek')}
+
+SESSION TOTALS
+• Logical calls / API requests: ${finiteNumber(session.logicalCalls)} / ${finiteNumber(session.requests)}
+• Success / failed / retries: ${finiteNumber(session.successfulRequests)} / ${finiteNumber(session.failedRequests)} / ${finiteNumber(session.retries)}
+• Invalid / empty responses: ${finiteNumber(session.invalidResponses)} / ${finiteNumber(session.emptyResponses)}
+• Input / output / reasoning tokens: ${formatTokens(session.tokens?.input)} / ${formatTokens(session.tokens?.output)} / ${formatTokens(session.tokens?.reasoning)}
+• Total tokens: ${formatTokens(session.tokens?.total)}
+• Cache read / write: ${formatTokens(session.tokens?.cacheRead)} / ${formatTokens(session.tokens?.cacheWrite)}
+• Estimated cost: $${finiteNumber(session.estimatedCostUsd).toFixed(6)}
+
+DAILY TOTALS
+• Requests: ${finiteNumber(daily.requests)}
+• Total tokens: ${formatTokens(daily.tokens?.total)}
+• Estimated cost: $${finiteNumber(daily.estimatedCostUsd).toFixed(6)}
+
+LIFETIME TOTALS
+• Requests: ${finiteNumber(lifetime.requests)}
+• Total tokens: ${formatTokens(lifetime.tokens?.total)}
+• Estimated cost: $${finiteNumber(lifetime.estimatedCostUsd).toFixed(6)}
+• Usage file: ${compactText(usage.persistenceFile || 'N/A', 140)}
+
+TRADING
+• Balance / equity: $${finiteNumber(health.trading?.balance).toFixed(2)} / $${finiteNumber(health.trading?.equity).toFixed(2)}
+• Open positions: ${finiteNumber(health.trading?.openPositions)}/${finiteNumber(health.trading?.maxPositions)}
+• Trades today: ${finiteNumber(health.trading?.tradesToday)}/${finiteNumber(health.trading?.maxTradesPerDay)}
+• Daily PnL: $${finiteNumber(health.trading?.dailyTarget?.netPnl).toFixed(2)}
+• Emergency stop: ${health.trading?.emergencyStop ? 'ACTIVE' : 'Off'}
+
+Cost is estimated only when the per-1M-token pricing variables are set in .env.`;
+
+    await ctx.reply(aiMessage.slice(0, 4000));
+  } catch (error) {
+    logger.error('FULL_HEALTH', error);
+    await sendOrEdit(
+      ctx,
+      ctx.chat.id,
+      loadingId,
+      `Health collection failed: ${compactText(error.message, 300)}`,
+      { parse_mode: false }
+    );
+  }
+}
+
 bot.command("status", handleStatus);
+bot.command("health", handleHealth);
 bot.command("performance", handlePerformance);
 bot.command("logs", handleLogs);
 bot.command("connection", handleConnection);
@@ -1319,6 +1522,11 @@ bot.command("wsstatus", handleConnection);
 bot.hears('🧠 AI Engine', async (ctx) => {
   logger.button('AI_PROVIDER', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
   await showAIStatus(ctx);
+});
+
+bot.hears('🩺 Health', async (ctx) => {
+  logger.button('FULL_HEALTH', ctx.from?.username || ctx.from?.id, { chatId: ctx.chat.id });
+  await handleHealth(ctx);
 });
 
 bot.hears('📊 Chart', async (ctx) => {
@@ -1977,17 +2185,17 @@ async function runFullMarketScan(ctx) {
                 : 'AI SIGNAL NOT EXECUTED';
           const patternList = patterns.slice(0, 12).map(pattern => `• ${pattern.name}`).join('\n') || '• None';
           const caption = `${title} - ${coin}/USDT (${tf})\n\n` +
-            `**Pre-scan score:** ${scanScore.toFixed(2)}/100\n` +
-            `**AI signal:** ${result?.action || 'HOLD'} (${result?.confidence || 0}%)\n` +
-            `**AI consensus:** ${aiConsensusSummary(result)}\n` +
+            `Pre-scan score: ${scanScore.toFixed(2)}/100\n` +
+            `AI signal: ${result?.action || 'HOLD'} (${result?.confidence || 0}%)\n` +
+            `AI consensus: ${aiConsensusSummary(result)}\n` +
             `${officialNewsContext(result)}${executionStatusText(result)}${leverageApprovalText(result)}${moneyManagementText(result)}${forecastProjectionText(result)}\n` +
-            `**Entry:** $${finiteNumber(result?.entryPrice).toFixed(4)}\n` +
-            `**SL:** $${finiteNumber(result?.stopLoss).toFixed(4)}\n` +
-            `**TP:** $${finiteNumber(result?.takeProfit).toFixed(4)}\n` +
-            `**Risk/reward:** ${finiteNumber(result?.riskReward).toFixed(2)}:1\n\n` +
-            `**Pattern context (${patterns.length}):**\n${patternList}\n\n` +
-            `**Reason:** ${result?.reasoning || 'No directional edge.'}\n` +
-            `**RSI:** ${finiteNumber(data?.rsi, 50).toFixed(2)} · Trend: ${techAnalysis?.marketTrend || 'NEUTRAL'}\n\n` +
+            `Entry: $${finiteNumber(result?.entryPrice).toFixed(4)}\n` +
+            `SL: $${finiteNumber(result?.stopLoss).toFixed(4)}\n` +
+            `TP: $${finiteNumber(result?.takeProfit).toFixed(4)}\n` +
+            `Risk/reward: ${finiteNumber(result?.riskReward).toFixed(2)}:1\n\n` +
+            `Pattern context (${patterns.length}):\n${patternList}\n\n` +
+            `Reason: ${result?.reasoning || 'No directional edge.'}\n` +
+            `RSI: ${finiteNumber(data?.rsi, 50).toFixed(2)} · Trend: ${techAnalysis?.marketTrend || 'NEUTRAL'}\n` +
             `${new Date().toISOString()}`;
 
           await sendPatternChart(

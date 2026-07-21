@@ -4,6 +4,9 @@ const tradeJournal = require('./trade_journal');
 const db = require('./database');
 const { normalizeCoin, sameCoin } = require('./symbol_utils');
 require('dotenv').config();
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
 
 let Anthropic = null;
 try {
@@ -77,10 +80,56 @@ class UltimateAITrader {
         this.holdNotificationCooldownMs = Math.max(60000, (Number(process.env.HOLD_NOTIFICATION_COOLDOWN_MINUTES) || 60) * 60 * 1000);
         this.lastHoldNotifications = new Map();
         this.lastEnsemble = null;
-        this.providerHealth = {
-            claude: { configured: claudeConfigured, ok: null, error: null, checkedAt: null, latencyMs: null },
-            deepseek: { configured: deepseekConfigured, ok: null, error: null, checkedAt: null, latencyMs: null }
+
+        // ==================== HEALTH / OBSERVABILITY ====================
+        this.processStartedAt = Date.now() - Math.round(process.uptime() * 1000);
+        this.providerCooldowns = {
+            claude: { until: 0, reason: null, type: null },
+            deepseek: { until: 0, reason: null, type: null }
         };
+        this.claudeCreditCooldownMs = Math.max(
+            60000,
+            (Number(process.env.CLAUDE_CREDIT_COOLDOWN_MINUTES) || 30) * 60 * 1000
+        );
+        this.providerRateLimitCooldownMs = Math.max(
+            30000,
+            (Number(process.env.AI_RATE_LIMIT_COOLDOWN_SECONDS) || 120) * 1000
+        );
+        this.providerAuthCooldownMs = Math.max(
+            60000,
+            (Number(process.env.AI_AUTH_COOLDOWN_MINUTES) || 15) * 60 * 1000
+        );
+
+        this.providerHealth = {
+            claude: this.createProviderHealth('claude', claudeConfigured, this.claudeModel),
+            deepseek: this.createProviderHealth('deepseek', deepseekConfigured, this.deepseekModel)
+        };
+
+        this.aiUsageFile = path.resolve(
+            process.env.AI_USAGE_FILE || path.join(process.cwd(), 'data', 'ai_usage.json')
+        );
+        this.aiPricing = this.buildAIPricing();
+        this.aiUsage = this.loadAIUsage();
+        this.aiSessionUsage = this.createUsageScope('session');
+        this.aiDailyUsage = this.createUsageScope('daily');
+        this.aiDailyUsage.dayKey = new Date().toISOString().slice(0, 10);
+        this.aiUsagePersistTimer = null;
+
+        this.healthRefreshIntervalMs = Math.min(
+            300000,
+            Math.max(5000, (Number(process.env.HEALTH_REFRESH_SECONDS) || 15) * 1000)
+        );
+        this.healthDiskPath = path.resolve(process.env.HEALTH_DISK_PATH || process.cwd());
+        this.lastSystemHealthAt = 0;
+        this.systemHealth = null;
+        this.systemHealthRefreshPromise = null;
+        this.previousCpuSnapshot = this.captureCpuSnapshot();
+        this.previousProcessCpu = {
+            usage: process.cpuUsage(),
+            at: Date.now()
+        };
+        this.previousNetworkSnapshot = this.readNetworkSnapshot();
+        this.healthTimer = null;
 
         this.anthropic = Anthropic && claudeConfigured
             ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -288,6 +337,8 @@ class UltimateAITrader {
             provider: this.aiProvider,
             model: this.model
         });
+
+        this.startHealthMonitor();
     }
 
     // ==================== INIT WEBSOCKET ====================
@@ -1855,6 +1906,744 @@ ANALYSIS RULES:
         return parsed;
     }
 
+    // ==================== HEALTH / USAGE HELPERS ====================
+
+    createProviderHealth(provider, configured, model) {
+        return {
+            provider,
+            model,
+            configured: Boolean(configured),
+            ok: null,
+            status: configured ? 'unknown' : 'not-configured',
+            degraded: false,
+            error: configured ? null : `${provider.toUpperCase()} API key is missing`,
+            checkedAt: null,
+            latencyMs: null,
+            averageLatencyMs: null,
+            lastSuccessAt: null,
+            lastFailureAt: null,
+            consecutiveFailures: 0,
+            totalChecks: 0,
+            successfulChecks: 0,
+            failedChecks: 0,
+            cooldownUntil: null,
+            cooldownRemainingMs: 0,
+            cooldownReason: null,
+            cooldownType: null
+        };
+    }
+
+    buildAIPricing() {
+        const numberOrZero = name => {
+            const value = Number(process.env[name]);
+            return Number.isFinite(value) && value >= 0 ? value : 0;
+        };
+
+        return {
+            currency: 'USD',
+            unit: 'per_1m_tokens',
+            claude: {
+                input: numberOrZero('CLAUDE_INPUT_COST_PER_1M'),
+                output: numberOrZero('CLAUDE_OUTPUT_COST_PER_1M'),
+                cacheRead: numberOrZero('CLAUDE_CACHE_READ_COST_PER_1M'),
+                cacheWrite: numberOrZero('CLAUDE_CACHE_WRITE_COST_PER_1M')
+            },
+            deepseek: {
+                input: numberOrZero('DEEPSEEK_INPUT_COST_PER_1M'),
+                output: numberOrZero('DEEPSEEK_OUTPUT_COST_PER_1M'),
+                cacheRead: numberOrZero('DEEPSEEK_CACHE_HIT_COST_PER_1M'),
+                cacheWrite: numberOrZero('DEEPSEEK_CACHE_MISS_COST_PER_1M')
+            }
+        };
+    }
+
+    createTokenTotals() {
+        return {
+            input: 0,
+            output: 0,
+            total: 0,
+            reasoning: 0,
+            cacheRead: 0,
+            cacheWrite: 0
+        };
+    }
+
+    createProviderUsage(provider) {
+        return {
+            provider,
+            model: provider === 'claude' ? this.claudeModel : this.deepseekModel,
+            logicalCalls: 0,
+            requests: 0,
+            successfulRequests: 0,
+            failedRequests: 0,
+            retries: 0,
+            healthChecks: 0,
+            invalidResponses: 0,
+            emptyResponses: 0,
+            inFlight: 0,
+            tokens: this.createTokenTotals(),
+            estimatedCostUsd: 0,
+            costConfigured: this.isPricingConfigured(provider),
+            totalLatencyMs: 0,
+            averageLatencyMs: 0,
+            minLatencyMs: null,
+            maxLatencyMs: 0,
+            successRatePct: 0,
+            lastRequestAt: null,
+            lastSuccessAt: null,
+            lastFailureAt: null,
+            lastError: null,
+            lastUsage: null
+        };
+    }
+
+    createUsageScope(scope) {
+        return {
+            scope,
+            startedAt: new Date().toISOString(),
+            updatedAt: null,
+            dayKey: null,
+            providers: {
+                claude: this.createProviderUsage('claude'),
+                deepseek: this.createProviderUsage('deepseek')
+            }
+        };
+    }
+
+    mergeProviderUsage(base, stored = {}) {
+        const merged = {
+            ...base,
+            ...stored,
+            tokens: {
+                ...base.tokens,
+                ...(stored.tokens || {})
+            }
+        };
+        merged.inFlight = 0;
+        merged.costConfigured = this.isPricingConfigured(base.provider);
+        return merged;
+    }
+
+    loadAIUsage() {
+        const base = this.createUsageScope('lifetime');
+        try {
+            if (!fs.existsSync(this.aiUsageFile)) return base;
+            const parsed = JSON.parse(fs.readFileSync(this.aiUsageFile, 'utf8'));
+            if (!parsed || typeof parsed !== 'object') return base;
+            return {
+                ...base,
+                ...parsed,
+                scope: 'lifetime',
+                providers: {
+                    claude: this.mergeProviderUsage(base.providers.claude, parsed?.providers?.claude),
+                    deepseek: this.mergeProviderUsage(base.providers.deepseek, parsed?.providers?.deepseek)
+                }
+            };
+        } catch (error) {
+            logger.warn('AI_USAGE_LOAD_FAILED', { error: error.message, file: this.aiUsageFile });
+            return base;
+        }
+    }
+
+    persistAIUsageSoon() {
+        if (this.aiUsagePersistTimer) return;
+        this.aiUsagePersistTimer = setTimeout(() => {
+            this.aiUsagePersistTimer = null;
+            try {
+                fs.mkdirSync(path.dirname(this.aiUsageFile), { recursive: true });
+                const temporaryFile = `${this.aiUsageFile}.tmp`;
+                fs.writeFileSync(temporaryFile, JSON.stringify(this.aiUsage, null, 2));
+                fs.renameSync(temporaryFile, this.aiUsageFile);
+            } catch (error) {
+                logger.warn('AI_USAGE_SAVE_FAILED', { error: error.message, file: this.aiUsageFile });
+            }
+        }, 1500);
+        if (typeof this.aiUsagePersistTimer.unref === 'function') this.aiUsagePersistTimer.unref();
+    }
+
+    isPricingConfigured(provider) {
+        const pricing = this.aiPricing?.[provider] || {};
+        return Object.values(pricing).some(value => Number(value) > 0);
+    }
+
+    rollDailyAIUsageIfNeeded() {
+        const dayKey = new Date().toISOString().slice(0, 10);
+        if (this.aiDailyUsage.dayKey === dayKey) return;
+        this.aiDailyUsage = this.createUsageScope('daily');
+        this.aiDailyUsage.dayKey = dayKey;
+    }
+
+    forEachUsageScope(callback) {
+        this.rollDailyAIUsageIfNeeded();
+        [this.aiUsage, this.aiSessionUsage, this.aiDailyUsage].forEach(callback);
+    }
+
+    recordAILogicalCall(provider) {
+        this.forEachUsageScope(scope => {
+            const usage = scope.providers[provider];
+            if (!usage) return;
+            usage.logicalCalls += 1;
+            usage.updatedAt = new Date().toISOString();
+            scope.updatedAt = usage.updatedAt;
+        });
+        this.persistAIUsageSoon();
+    }
+
+    beginAIRequest(provider, kind = 'analysis', attempt = 1) {
+        const ticket = {
+            provider,
+            kind,
+            attempt,
+            startedAt: Date.now()
+        };
+        this.forEachUsageScope(scope => {
+            const usage = scope.providers[provider];
+            if (!usage) return;
+            usage.requests += 1;
+            usage.inFlight += 1;
+            usage.lastRequestAt = new Date(ticket.startedAt).toISOString();
+            if (kind === 'health') usage.healthChecks += 1;
+            if (attempt > 1) usage.retries += 1;
+            scope.updatedAt = usage.lastRequestAt;
+        });
+        return ticket;
+    }
+
+    normalizeProviderUsage(provider, rawUsage = {}) {
+        if (!rawUsage || typeof rawUsage !== 'object') return this.createTokenTotals();
+
+        if (provider === 'claude') {
+            const input = Number(rawUsage.input_tokens) || 0;
+            const output = Number(rawUsage.output_tokens) || 0;
+            const cacheRead = Number(rawUsage.cache_read_input_tokens) || 0;
+            const cacheWrite = Number(rawUsage.cache_creation_input_tokens) || 0;
+            return {
+                input,
+                output,
+                total: input + output + cacheRead + cacheWrite,
+                reasoning: 0,
+                cacheRead,
+                cacheWrite
+            };
+        }
+
+        const input = Number(rawUsage.prompt_tokens) || 0;
+        const output = Number(rawUsage.completion_tokens) || 0;
+        const cacheRead = Number(
+            rawUsage.prompt_cache_hit_tokens ??
+            rawUsage.prompt_tokens_details?.cached_tokens ??
+            0
+        ) || 0;
+        const cacheMiss = Number(
+            rawUsage.prompt_cache_miss_tokens ??
+            Math.max(0, input - cacheRead)
+        ) || 0;
+        const reasoning = Number(
+            rawUsage.completion_tokens_details?.reasoning_tokens ??
+            rawUsage.reasoning_tokens ??
+            0
+        ) || 0;
+        const total = Number(rawUsage.total_tokens) || (input + output);
+        return {
+            input,
+            output,
+            total,
+            reasoning,
+            cacheRead,
+            cacheWrite: cacheMiss
+        };
+    }
+
+    estimateUsageCost(provider, usage) {
+        const pricing = this.aiPricing?.[provider] || {};
+        if (!this.isPricingConfigured(provider)) return 0;
+        const perMillion = 1000000;
+        return (
+            (usage.input * (Number(pricing.input) || 0)) +
+            (usage.output * (Number(pricing.output) || 0)) +
+            (usage.cacheRead * (Number(pricing.cacheRead) || 0)) +
+            (usage.cacheWrite * (Number(pricing.cacheWrite) || 0))
+        ) / perMillion;
+    }
+
+    finishAIRequest(ticket, result = {}) {
+        if (!ticket?.provider) return;
+        const finishedAt = Date.now();
+        const latencyMs = Math.max(0, finishedAt - ticket.startedAt);
+        const normalizedUsage = this.normalizeProviderUsage(ticket.provider, result.usage);
+        const cost = this.estimateUsageCost(ticket.provider, normalizedUsage);
+        const errorMessage = result.error ? this.providerErrorMessage(result.error) : null;
+
+        this.forEachUsageScope(scope => {
+            const usage = scope.providers[ticket.provider];
+            if (!usage) return;
+            usage.inFlight = Math.max(0, usage.inFlight - 1);
+            if (result.ok) {
+                usage.successfulRequests += 1;
+                usage.lastSuccessAt = new Date(finishedAt).toISOString();
+            } else {
+                usage.failedRequests += 1;
+                usage.lastFailureAt = new Date(finishedAt).toISOString();
+                usage.lastError = errorMessage;
+            }
+            usage.totalLatencyMs += latencyMs;
+            usage.averageLatencyMs = usage.requests > 0
+                ? Math.round(usage.totalLatencyMs / usage.requests)
+                : 0;
+            usage.minLatencyMs = usage.minLatencyMs === null
+                ? latencyMs
+                : Math.min(usage.minLatencyMs, latencyMs);
+            usage.maxLatencyMs = Math.max(usage.maxLatencyMs, latencyMs);
+            usage.successRatePct = usage.requests > 0
+                ? Number(((usage.successfulRequests / usage.requests) * 100).toFixed(2))
+                : 0;
+            for (const key of Object.keys(usage.tokens)) {
+                usage.tokens[key] += Number(normalizedUsage[key]) || 0;
+            }
+            usage.estimatedCostUsd += cost;
+            usage.lastUsage = {
+                ...normalizedUsage,
+                estimatedCostUsd: cost,
+                at: new Date(finishedAt).toISOString(),
+                kind: ticket.kind,
+                attempt: ticket.attempt
+            };
+            usage.updatedAt = new Date(finishedAt).toISOString();
+            scope.updatedAt = usage.updatedAt;
+        });
+
+        this.persistAIUsageSoon();
+    }
+
+    recordAIResponseIssue(provider, type, error = null) {
+        this.forEachUsageScope(scope => {
+            const usage = scope.providers[provider];
+            if (!usage) return;
+            if (type === 'empty') usage.emptyResponses += 1;
+            else usage.invalidResponses += 1;
+            if (error) usage.lastError = this.providerErrorMessage(error);
+            scope.updatedAt = new Date().toISOString();
+        });
+        this.persistAIUsageSoon();
+    }
+
+    getUsageScopeSnapshot(scope) {
+        const copy = JSON.parse(JSON.stringify(scope));
+        const providers = Object.values(copy.providers || {});
+        copy.totals = providers.reduce((totals, provider) => {
+            totals.logicalCalls += Number(provider.logicalCalls) || 0;
+            totals.requests += Number(provider.requests) || 0;
+            totals.successfulRequests += Number(provider.successfulRequests) || 0;
+            totals.failedRequests += Number(provider.failedRequests) || 0;
+            totals.retries += Number(provider.retries) || 0;
+            totals.healthChecks += Number(provider.healthChecks) || 0;
+            totals.invalidResponses += Number(provider.invalidResponses) || 0;
+            totals.emptyResponses += Number(provider.emptyResponses) || 0;
+            totals.estimatedCostUsd += Number(provider.estimatedCostUsd) || 0;
+            for (const key of Object.keys(totals.tokens)) {
+                totals.tokens[key] += Number(provider.tokens?.[key]) || 0;
+            }
+            return totals;
+        }, {
+            logicalCalls: 0,
+            requests: 0,
+            successfulRequests: 0,
+            failedRequests: 0,
+            retries: 0,
+            healthChecks: 0,
+            invalidResponses: 0,
+            emptyResponses: 0,
+            estimatedCostUsd: 0,
+            tokens: this.createTokenTotals()
+        });
+        copy.totals.successRatePct = copy.totals.requests > 0
+            ? Number(((copy.totals.successfulRequests / copy.totals.requests) * 100).toFixed(2))
+            : 0;
+        copy.totals.estimatedCostUsd = Number(copy.totals.estimatedCostUsd.toFixed(8));
+        return copy;
+    }
+
+    getAIUsageStatus() {
+        this.rollDailyAIUsageIfNeeded();
+        return {
+            pricing: this.aiPricing,
+            pricingConfigured: {
+                claude: this.isPricingConfigured('claude'),
+                deepseek: this.isPricingConfigured('deepseek')
+            },
+            persistenceFile: this.aiUsageFile,
+            session: this.getUsageScopeSnapshot(this.aiSessionUsage),
+            daily: this.getUsageScopeSnapshot(this.aiDailyUsage),
+            lifetime: this.getUsageScopeSnapshot(this.aiUsage)
+        };
+    }
+
+    getProviderCooldown(provider) {
+        const cooldown = this.providerCooldowns[provider] || { until: 0, reason: null, type: null };
+        const remainingMs = Math.max(0, Number(cooldown.until) - Date.now());
+        if (remainingMs <= 0 && cooldown.until) {
+            this.providerCooldowns[provider] = { until: 0, reason: null, type: null };
+        }
+        return {
+            active: remainingMs > 0,
+            until: remainingMs > 0 ? new Date(cooldown.until).toISOString() : null,
+            remainingMs,
+            reason: remainingMs > 0 ? cooldown.reason : null,
+            type: remainingMs > 0 ? cooldown.type : null
+        };
+    }
+
+    setProviderCooldown(provider, durationMs, reason, type = 'temporary') {
+        const until = Date.now() + Math.max(1000, Number(durationMs) || 0);
+        this.providerCooldowns[provider] = { until, reason, type };
+        const health = this.providerHealth[provider] || {};
+        this.providerHealth[provider] = {
+            ...health,
+            ok: false,
+            status: 'cooldown',
+            degraded: true,
+            cooldownUntil: new Date(until).toISOString(),
+            cooldownRemainingMs: Math.max(0, until - Date.now()),
+            cooldownReason: reason,
+            cooldownType: type,
+            error: reason,
+            checkedAt: new Date().toISOString()
+        };
+        logger.warn('AI_PROVIDER_COOLDOWN', {
+            provider,
+            type,
+            until: new Date(until).toISOString(),
+            reason
+        });
+        return this.getProviderCooldown(provider);
+    }
+
+    clearProviderCooldown(provider) {
+        this.providerCooldowns[provider] = { until: 0, reason: null, type: null };
+        const health = this.providerHealth[provider];
+        if (health) {
+            health.cooldownUntil = null;
+            health.cooldownRemainingMs = 0;
+            health.cooldownReason = null;
+            health.cooldownType = null;
+        }
+    }
+
+    assertProviderAvailable(provider) {
+        const cooldown = this.getProviderCooldown(provider);
+        if (!cooldown.active) return;
+        const error = new Error(
+            `${provider === 'claude' ? 'Claude' : 'DeepSeek'} cooldown active for ` +
+            `${Math.ceil(cooldown.remainingMs / 60000)} minute(s): ${cooldown.reason || 'temporary provider failure'}`
+        );
+        error.code = 'PROVIDER_COOLDOWN';
+        error.status = 503;
+        throw error;
+    }
+
+    isCreditOrBillingError(error) {
+        const message = this.providerErrorMessage(error);
+        return /credit balance is too low|insufficient credits?|billing|payment required|quota exceeded|insufficient balance/i.test(message);
+    }
+
+    applyProviderFailureCooldown(provider, error) {
+        if (error?.code === 'PROVIDER_COOLDOWN') return;
+        const status = Number(error?.status || 0);
+        const message = this.providerErrorMessage(error);
+        if (provider === 'claude' && this.isCreditOrBillingError(error)) {
+            this.setProviderCooldown(
+                provider,
+                this.claudeCreditCooldownMs,
+                `Anthropic billing/credit error: ${message}`,
+                'billing'
+            );
+            return;
+        }
+        if (status === 429 || /rate limit|too many requests/i.test(message)) {
+            this.setProviderCooldown(provider, this.providerRateLimitCooldownMs, message, 'rate-limit');
+            return;
+        }
+        if (status === 401 || status === 403 || /invalid api key|authentication|unauthorized|forbidden/i.test(message)) {
+            this.setProviderCooldown(provider, this.providerAuthCooldownMs, message, 'authentication');
+        }
+    }
+
+    captureCpuSnapshot() {
+        const cpus = os.cpus() || [];
+        return cpus.reduce((total, cpu) => {
+            const times = cpu.times || {};
+            const idle = Number(times.idle) || 0;
+            const sum = Object.values(times).reduce((acc, value) => acc + (Number(value) || 0), 0);
+            total.idle += idle;
+            total.total += sum;
+            return total;
+        }, { idle: 0, total: 0, at: Date.now() });
+    }
+
+    readNetworkSnapshot() {
+        try {
+            if (process.platform !== 'linux' || !fs.existsSync('/proc/net/dev')) {
+                return { rxBytes: 0, txBytes: 0, interfaces: {}, at: Date.now(), available: false };
+            }
+            const lines = fs.readFileSync('/proc/net/dev', 'utf8').split('\n').slice(2);
+            const snapshot = { rxBytes: 0, txBytes: 0, interfaces: {}, at: Date.now(), available: true };
+            for (const line of lines) {
+                if (!line.includes(':')) continue;
+                const [namePart, valuesPart] = line.split(':');
+                const name = namePart.trim();
+                if (!name || name === 'lo') continue;
+                const values = valuesPart.trim().split(/\s+/).map(Number);
+                const rxBytes = Number(values[0]) || 0;
+                const txBytes = Number(values[8]) || 0;
+                snapshot.interfaces[name] = { rxBytes, txBytes };
+                snapshot.rxBytes += rxBytes;
+                snapshot.txBytes += txBytes;
+            }
+            return snapshot;
+        } catch (error) {
+            return { rxBytes: 0, txBytes: 0, interfaces: {}, at: Date.now(), available: false, error: error.message };
+        }
+    }
+
+    getDiskUsage() {
+        try {
+            if (typeof fs.statfsSync !== 'function') {
+                return { available: false, path: this.healthDiskPath, error: 'fs.statfsSync is unavailable on this Node.js version' };
+            }
+            const stats = fs.statfsSync(this.healthDiskPath);
+            const blockSize = Number(stats.bsize || stats.frsize || 0);
+            const totalBytes = Number(stats.blocks) * blockSize;
+            const freeBytes = Number(stats.bavail ?? stats.bfree) * blockSize;
+            const usedBytes = Math.max(0, totalBytes - freeBytes);
+            return {
+                available: totalBytes > 0,
+                path: this.healthDiskPath,
+                totalBytes,
+                usedBytes,
+                freeBytes,
+                usagePct: totalBytes > 0 ? Number(((usedBytes / totalBytes) * 100).toFixed(2)) : 0
+            };
+        } catch (error) {
+            return { available: false, path: this.healthDiskPath, error: error.message };
+        }
+    }
+
+    getNetworkAddresses() {
+        const interfaces = os.networkInterfaces() || {};
+        const addresses = [];
+        for (const [name, values] of Object.entries(interfaces)) {
+            for (const item of values || []) {
+                if (item.internal) continue;
+                addresses.push({
+                    interface: name,
+                    family: item.family,
+                    address: item.address,
+                    mac: item.mac
+                });
+            }
+        }
+        return addresses;
+    }
+
+    getHealthSeverity(snapshot) {
+        const memoryPct = Number(snapshot?.memory?.usagePct) || 0;
+        const diskPct = Number(snapshot?.disk?.usagePct) || 0;
+        const cpuPct = Number(snapshot?.cpu?.systemUsagePct) || 0;
+        const eventLoopLagMs = Number(snapshot?.process?.eventLoopLagMs) || 0;
+        if (memoryPct >= 95 || diskPct >= 97 || eventLoopLagMs >= 1000) return 'critical';
+        if (memoryPct >= 85 || diskPct >= 90 || cpuPct >= 90 || eventLoopLagMs >= 250) return 'warning';
+        return 'healthy';
+    }
+
+    async refreshSystemHealth(force = false) {
+        const now = Date.now();
+        if (!force && this.systemHealth && now - this.lastSystemHealthAt < this.healthRefreshIntervalMs) {
+            return this.systemHealth;
+        }
+        if (this.systemHealthRefreshPromise) return this.systemHealthRefreshPromise;
+
+        this.systemHealthRefreshPromise = (async () => {
+            const loopProbeStartedAt = process.hrtime.bigint();
+            await new Promise(resolve => setImmediate(resolve));
+            const eventLoopLagMs = Number(process.hrtime.bigint() - loopProbeStartedAt) / 1e6;
+
+            const currentCpu = this.captureCpuSnapshot();
+            const cpuTotalDelta = Math.max(1, currentCpu.total - this.previousCpuSnapshot.total);
+            const cpuIdleDelta = Math.max(0, currentCpu.idle - this.previousCpuSnapshot.idle);
+            const systemCpuPct = Math.max(0, Math.min(100, ((cpuTotalDelta - cpuIdleDelta) / cpuTotalDelta) * 100));
+            this.previousCpuSnapshot = currentCpu;
+
+            const processCpuNow = process.cpuUsage();
+            const processCpuElapsedUs =
+                (processCpuNow.user - this.previousProcessCpu.usage.user) +
+                (processCpuNow.system - this.previousProcessCpu.usage.system);
+            const wallElapsedMs = Math.max(1, now - this.previousProcessCpu.at);
+            const logicalCpuCount = Math.max(1, (os.cpus() || []).length);
+            const processCpuPct = Math.max(
+                0,
+                Math.min(100, (processCpuElapsedUs / 1000 / wallElapsedMs / logicalCpuCount) * 100)
+            );
+            this.previousProcessCpu = { usage: processCpuNow, at: now };
+
+            const totalMemory = os.totalmem();
+            const freeMemory = os.freemem();
+            const usedMemory = Math.max(0, totalMemory - freeMemory);
+            const processMemory = process.memoryUsage();
+
+            const networkNow = this.readNetworkSnapshot();
+            const networkElapsedSeconds = Math.max(
+                0.001,
+                (networkNow.at - (this.previousNetworkSnapshot?.at || networkNow.at)) / 1000
+            );
+            const rxRate = networkNow.available && this.previousNetworkSnapshot?.available
+                ? Math.max(0, networkNow.rxBytes - this.previousNetworkSnapshot.rxBytes) / networkElapsedSeconds
+                : 0;
+            const txRate = networkNow.available && this.previousNetworkSnapshot?.available
+                ? Math.max(0, networkNow.txBytes - this.previousNetworkSnapshot.txBytes) / networkElapsedSeconds
+                : 0;
+            this.previousNetworkSnapshot = networkNow;
+
+            const handles = typeof process._getActiveHandles === 'function'
+                ? process._getActiveHandles().length
+                : null;
+            const requests = typeof process._getActiveRequests === 'function'
+                ? process._getActiveRequests().length
+                : null;
+
+            const snapshot = {
+                checkedAt: new Date().toISOString(),
+                hostname: os.hostname(),
+                platform: process.platform,
+                osType: os.type(),
+                osRelease: os.release(),
+                architecture: process.arch,
+                nodeVersion: process.version,
+                pid: process.pid,
+                cwd: process.cwd(),
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+                cpu: {
+                    model: os.cpus()?.[0]?.model || 'Unknown',
+                    logicalCores: logicalCpuCount,
+                    systemUsagePct: Number(systemCpuPct.toFixed(2)),
+                    processUsagePct: Number(processCpuPct.toFixed(2)),
+                    loadAverage1m: Number(os.loadavg()[0].toFixed(2)),
+                    loadAverage5m: Number(os.loadavg()[1].toFixed(2)),
+                    loadAverage15m: Number(os.loadavg()[2].toFixed(2))
+                },
+                memory: {
+                    totalBytes: totalMemory,
+                    usedBytes: usedMemory,
+                    freeBytes: freeMemory,
+                    usagePct: totalMemory > 0 ? Number(((usedMemory / totalMemory) * 100).toFixed(2)) : 0,
+                    process: {
+                        rssBytes: processMemory.rss,
+                        heapTotalBytes: processMemory.heapTotal,
+                        heapUsedBytes: processMemory.heapUsed,
+                        externalBytes: processMemory.external,
+                        arrayBuffersBytes: processMemory.arrayBuffers || 0,
+                        heapUsagePct: processMemory.heapTotal > 0
+                            ? Number(((processMemory.heapUsed / processMemory.heapTotal) * 100).toFixed(2))
+                            : 0
+                    }
+                },
+                disk: this.getDiskUsage(),
+                network: {
+                    available: networkNow.available,
+                    rxBytes: networkNow.rxBytes,
+                    txBytes: networkNow.txBytes,
+                    rxBytesPerSecond: Number(rxRate.toFixed(2)),
+                    txBytesPerSecond: Number(txRate.toFixed(2)),
+                    interfaces: networkNow.interfaces,
+                    addresses: this.getNetworkAddresses(),
+                    error: networkNow.error || null
+                },
+                uptime: {
+                    serverSeconds: Math.floor(os.uptime()),
+                    processSeconds: Math.floor(process.uptime()),
+                    processStartedAt: new Date(this.processStartedAt).toISOString(),
+                    serverBootedAt: new Date(Date.now() - os.uptime() * 1000).toISOString()
+                },
+                process: {
+                    eventLoopLagMs: Number(eventLoopLagMs.toFixed(2)),
+                    activeHandles: handles,
+                    activeRequests: requests,
+                    title: process.title,
+                    execPath: process.execPath,
+                    pm2: {
+                        enabled: process.env.pm_id !== undefined,
+                        id: process.env.pm_id ?? null,
+                        name: process.env.name || process.env.pm2_name || null,
+                        instanceId: process.env.NODE_APP_INSTANCE ?? null,
+                        restartTime: process.env.restart_time ?? null,
+                        unstableRestarts: process.env.unstable_restarts ?? null
+                    }
+                }
+            };
+            snapshot.status = this.getHealthSeverity(snapshot);
+            this.systemHealth = snapshot;
+            this.lastSystemHealthAt = Date.now();
+            return snapshot;
+        })().finally(() => {
+            this.systemHealthRefreshPromise = null;
+        });
+
+        return this.systemHealthRefreshPromise;
+    }
+
+    startHealthMonitor() {
+        this.refreshSystemHealth(true).catch(error => {
+            logger.warn('SYSTEM_HEALTH_INITIAL_REFRESH_FAILED', { error: error.message });
+        });
+        if (this.healthTimer) return;
+        this.healthTimer = setInterval(() => {
+            this.refreshSystemHealth(true).catch(error => {
+                logger.warn('SYSTEM_HEALTH_REFRESH_FAILED', { error: error.message });
+            });
+        }, this.healthRefreshIntervalMs);
+        if (typeof this.healthTimer.unref === 'function') this.healthTimer.unref();
+    }
+
+    async getFullHealthStatus(options = {}) {
+        const checkProviders = options.checkProviders !== false;
+        const force = options.force !== false;
+        const [server, connections] = await Promise.all([
+            this.refreshSystemHealth(force),
+            checkProviders
+                ? this.checkAIConnections({ force: Boolean(options.forceProviderCheck) })
+                : Promise.resolve(null)
+        ]);
+        const ai = this.getAIStatus();
+        const providers = Object.values(ai.providerHealth || {});
+        const anyProviderReady = providers.some(provider => provider.configured && provider.status === 'healthy');
+        const anyProviderCoolingDown = providers.some(provider => provider.status === 'cooldown');
+        const overall = server.status === 'critical'
+            ? 'critical'
+            : (!anyProviderReady || anyProviderCoolingDown || server.status === 'warning')
+                ? 'degraded'
+                : 'healthy';
+        return {
+            overall,
+            checkedAt: new Date().toISOString(),
+            server,
+            ai,
+            connections,
+            trading: {
+                isTrading: this.isTrading,
+                emergencyStop: this.emergencyStop,
+                websocketActive: this.wsActive,
+                balance: this.currentBalance,
+                equity: this.currentEquity,
+                openPositions: Object.keys(this.positions || {}).length,
+                maxPositions: this.maxPositions,
+                tradesToday: this.tradesToday,
+                maxTradesPerDay: this.maxTradesPerDay,
+                dailyLoss: this.dailyLoss,
+                dailyLossLimit: this.getEffectiveDailyLossLimit(),
+                dailyTarget: this.getDailyTargetStatus()
+            }
+        };
+    }
+
     providerErrorMessage(error) {
         let raw = error?.error?.message || error?.message || String(error || 'Unknown API error');
         raw = String(raw || 'Unknown API error');
@@ -1877,14 +2666,40 @@ ANALYSIS RULES:
     }
 
     recordProviderHealth(provider, ok, error = null, startedAt = null) {
-        const previous = this.providerHealth[provider] || {};
+        const previous = this.providerHealth[provider] || this.createProviderHealth(provider, true, null);
+        const now = Date.now();
+        const latencyMs = startedAt ? now - startedAt : null;
+        const cooldown = this.getProviderCooldown(provider);
+        const totalChecks = (Number(previous.totalChecks) || 0) + 1;
+        const successfulChecks = (Number(previous.successfulChecks) || 0) + (ok ? 1 : 0);
+        const failedChecks = (Number(previous.failedChecks) || 0) + (ok ? 0 : 1);
+        const previousAverage = Number(previous.averageLatencyMs) || 0;
+        const averageLatencyMs = latencyMs === null
+            ? previousAverage || null
+            : Math.round(((previousAverage * Math.max(0, totalChecks - 1)) + latencyMs) / totalChecks);
+
+        if (ok) this.clearProviderCooldown(provider);
+        const activeCooldown = ok ? this.getProviderCooldown(provider) : cooldown;
         this.providerHealth[provider] = {
             ...previous,
             configured: previous.configured ?? true,
             ok: Boolean(ok),
+            status: ok ? 'healthy' : (activeCooldown.active ? 'cooldown' : 'unhealthy'),
+            degraded: !ok,
             error: ok ? null : this.providerErrorMessage(error),
-            checkedAt: new Date().toISOString(),
-            latencyMs: startedAt ? Date.now() - startedAt : null
+            checkedAt: new Date(now).toISOString(),
+            latencyMs,
+            averageLatencyMs,
+            lastSuccessAt: ok ? new Date(now).toISOString() : previous.lastSuccessAt,
+            lastFailureAt: ok ? previous.lastFailureAt : new Date(now).toISOString(),
+            consecutiveFailures: ok ? 0 : (Number(previous.consecutiveFailures) || 0) + 1,
+            totalChecks,
+            successfulChecks,
+            failedChecks,
+            cooldownUntil: activeCooldown.until,
+            cooldownRemainingMs: activeCooldown.remainingMs,
+            cooldownReason: activeCooldown.reason,
+            cooldownType: activeCooldown.type
         };
         return this.providerHealth[provider];
     }
@@ -1920,23 +2735,39 @@ ANALYSIS RULES:
         }
     }
 
-    async checkAIConnections() {
+    async checkAIConnections(options = {}) {
+        const force = Boolean(options.force);
         const checkClaude = async () => {
             const startedAt = Date.now();
             if (!process.env.ANTHROPIC_API_KEY) {
                 return this.recordProviderHealth('claude', false, 'ANTHROPIC_API_KEY is missing', startedAt);
             }
+            const cooldown = this.getProviderCooldown('claude');
+            if (cooldown.active && !force) {
+                const health = this.providerHealth.claude;
+                return {
+                    ...health,
+                    ok: false,
+                    status: 'cooldown',
+                    cooldownUntil: cooldown.until,
+                    cooldownRemainingMs: cooldown.remainingMs,
+                    cooldownReason: cooldown.reason,
+                    cooldownType: cooldown.type
+                };
+            }
+            const ticket = this.beginAIRequest('claude', 'health', 1);
             try {
-                // Direct HTTP avoids SDK-version-dependent request mutation and
-                // verifies the same authentication path used for live analysis.
                 await this.fetchJSON('https://api.anthropic.com/v1/models?limit=1', {
                     headers: {
                         'x-api-key': process.env.ANTHROPIC_API_KEY,
                         'anthropic-version': '2023-06-01'
                     }
                 }, 15000);
+                this.finishAIRequest(ticket, { ok: true });
                 return this.recordProviderHealth('claude', true, null, startedAt);
             } catch (error) {
+                this.finishAIRequest(ticket, { ok: false, error });
+                this.applyProviderFailureCooldown('claude', error);
                 return this.recordProviderHealth('claude', false, error, startedAt);
             }
         };
@@ -1946,6 +2777,20 @@ ANALYSIS RULES:
             if (!process.env.DEEPSEEK_API_KEY) {
                 return this.recordProviderHealth('deepseek', false, 'DEEPSEEK_API_KEY is missing', startedAt);
             }
+            const cooldown = this.getProviderCooldown('deepseek');
+            if (cooldown.active && !force) {
+                const health = this.providerHealth.deepseek;
+                return {
+                    ...health,
+                    ok: false,
+                    status: 'cooldown',
+                    cooldownUntil: cooldown.until,
+                    cooldownRemainingMs: cooldown.remainingMs,
+                    cooldownReason: cooldown.reason,
+                    cooldownType: cooldown.type
+                };
+            }
+            const ticket = this.beginAIRequest('deepseek', 'health', 1);
             try {
                 const models = await this.fetchJSON('https://api.deepseek.com/models', {
                     headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
@@ -1956,16 +2801,16 @@ ANALYSIS RULES:
                 if (!available) {
                     throw new Error(`Model ${this.deepseekModel} is not available to this API key`);
                 }
+                this.finishAIRequest(ticket, { ok: true });
                 return this.recordProviderHealth('deepseek', true, null, startedAt);
             } catch (error) {
+                this.finishAIRequest(ticket, { ok: false, error });
+                this.applyProviderFailureCooldown('deepseek', error);
                 return this.recordProviderHealth('deepseek', false, error, startedAt);
             }
         };
 
-        const [claude, deepseek] = await Promise.all([
-            checkClaude(),
-            checkDeepSeek()
-        ]);
+        const [claude, deepseek] = await Promise.all([checkClaude(), checkDeepSeek()]);
         return {
             provider: this.aiProvider,
             claude,
@@ -1979,7 +2824,7 @@ ANALYSIS RULES:
         // non-default sampling parameters. Never add temperature, top_p or top_k.
         return {
             model: this.claudeModel,
-            max_tokens: 2200,
+            max_tokens: Math.min(16000, Math.max(512, Number(process.env.CLAUDE_MAX_TOKENS) || 2200)),
             system: systemPrompt,
             messages: [{ role: 'user', content: prompt }]
         };
@@ -1987,38 +2832,52 @@ ANALYSIS RULES:
 
     async requestClaudeAnalysis(prompt, systemPrompt) {
         const startedAt = Date.now();
+        this.recordAILogicalCall('claude');
         try {
             if (!process.env.ANTHROPIC_API_KEY) {
                 throw new Error('ANTHROPIC_API_KEY is missing');
             }
+            this.assertProviderAvailable('claude');
 
             const payload = this.buildClaudeRequest(prompt, systemPrompt);
             let response;
 
-            // Direct mode is the default because it gives exact control over
-            // the JSON payload and prevents deprecated sampling fields from
-            // being injected by an outdated wrapper or copied helper.
             if (this.claudeApiMode !== 'sdk') {
-                response = await this.withRetry(
-                    () => this.fetchJSON('https://api.anthropic.com/v1/messages', {
-                        method: 'POST',
-                        headers: {
-                            'x-api-key': process.env.ANTHROPIC_API_KEY,
-                            'anthropic-version': '2023-06-01',
-                            'content-type': 'application/json'
-                        },
-                        body: JSON.stringify(payload)
-                    }, this.claudeTimeoutMs),
-                    this.claudeRetryCount
-                );
+                response = await this.withRetry(async attempt => {
+                    const ticket = this.beginAIRequest('claude', 'analysis', attempt);
+                    try {
+                        const result = await this.fetchJSON('https://api.anthropic.com/v1/messages', {
+                            method: 'POST',
+                            headers: {
+                                'x-api-key': process.env.ANTHROPIC_API_KEY,
+                                'anthropic-version': '2023-06-01',
+                                'content-type': 'application/json'
+                            },
+                            body: JSON.stringify(payload)
+                        }, this.claudeTimeoutMs);
+                        this.finishAIRequest(ticket, { ok: true, usage: result?.usage });
+                        return result;
+                    } catch (error) {
+                        this.finishAIRequest(ticket, { ok: false, error });
+                        throw error;
+                    }
+                }, this.claudeRetryCount);
             } else {
                 if (!this.anthropic) {
                     throw new Error('Claude SDK mode selected, but @anthropic-ai/sdk is unavailable');
                 }
-                response = await this.anthropic.messages.create(payload);
+                const ticket = this.beginAIRequest('claude', 'analysis', 1);
+                try {
+                    response = await this.anthropic.messages.create(payload);
+                    this.finishAIRequest(ticket, { ok: true, usage: response?.usage });
+                } catch (error) {
+                    this.finishAIRequest(ticket, { ok: false, error });
+                    throw error;
+                }
             }
 
             if (response.stop_reason === 'refusal') {
+                this.recordAIResponseIssue('claude', 'invalid', 'Claude refused the analysis request');
                 throw new Error('Claude refused the analysis request');
             }
 
@@ -2028,10 +2887,17 @@ ANALYSIS RULES:
                 .join('\n')
                 .trim();
             if (!content) {
+                this.recordAIResponseIssue('claude', 'empty', 'Claude returned no text content');
                 throw new Error(`Claude returned no text content (stop_reason: ${response.stop_reason || 'unknown'})`);
             }
 
-            const parsed = this.parseAIContent(content, 'claude');
+            let parsed;
+            try {
+                parsed = this.parseAIContent(content, 'claude');
+            } catch (error) {
+                this.recordAIResponseIssue('claude', 'invalid', error);
+                throw error;
+            }
             this.recordProviderHealth('claude', true, null, startedAt);
             return parsed;
         } catch (error) {
@@ -2039,6 +2905,7 @@ ANALYSIS RULES:
             if (/temperature|top_p|top_k|sampling parameter/i.test(message)) {
                 error.message = `Claude rejected deprecated sampling parameters. V16.1 sends none; make sure the running server was replaced and restarted. Original: ${message}`;
             }
+            this.applyProviderFailureCooldown('claude', error);
             this.recordProviderHealth('claude', false, error, startedAt);
             throw error;
         }
@@ -2046,10 +2913,12 @@ ANALYSIS RULES:
 
     async requestDeepSeekAnalysis(prompt, systemPrompt) {
         const startedAt = Date.now();
+        this.recordAILogicalCall('deepseek');
         try {
             if (!process.env.DEEPSEEK_API_KEY) {
                 throw new Error('DEEPSEEK_API_KEY is missing');
             }
+            this.assertProviderAvailable('deepseek');
 
             // DeepSeek documents that JSON mode may occasionally return empty
             // final content. Use a bounded recovery sequence instead of
@@ -2104,14 +2973,22 @@ ANALYSIS RULES:
                 try {
                     // Direct HTTP keeps DeepSeek-specific fields intact across
                     // client implementations.
-                    const response = await this.fetchJSON('https://api.deepseek.com/chat/completions', {
-                        method: 'POST',
-                        headers: {
-                            Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify(body)
-                    }, attempt.thinking ? 90000 : 60000);
+                    const ticket = this.beginAIRequest('deepseek', 'analysis', index + 1);
+                    let response;
+                    try {
+                        response = await this.fetchJSON('https://api.deepseek.com/chat/completions', {
+                            method: 'POST',
+                            headers: {
+                                Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(body)
+                        }, attempt.thinking ? 90000 : 60000);
+                        this.finishAIRequest(ticket, { ok: true, usage: response?.usage });
+                    } catch (error) {
+                        this.finishAIRequest(ticket, { ok: false, error });
+                        throw error;
+                    }
 
                     const choice = response.choices?.[0];
                     const finishReason = choice?.finish_reason || 'unknown';
@@ -2128,6 +3005,7 @@ ANALYSIS RULES:
                             `(finish: ${finishReason}, reasoning characters: ${reasoningLength})`
                         );
                         emptyError.recoverable = true;
+                        this.recordAIResponseIssue('deepseek', 'empty', emptyError);
                         throw emptyError;
                     }
 
@@ -2143,6 +3021,7 @@ ANALYSIS RULES:
                             `DeepSeek returned invalid JSON in ${attempt.label} mode: ${this.providerErrorMessage(parseError)}`
                         );
                         invalidError.recoverable = true;
+                        this.recordAIResponseIssue('deepseek', 'invalid', invalidError);
                         throw invalidError;
                     }
                 } catch (error) {
@@ -2161,6 +3040,7 @@ ANALYSIS RULES:
 
             throw lastRecoverableError || new Error('DeepSeek analysis failed without a response');
         } catch (error) {
+            this.applyProviderFailureCooldown('deepseek', error);
             this.recordProviderHealth('deepseek', false, error, startedAt);
             throw error;
         }
@@ -2972,32 +3852,67 @@ MAKE DECISION. RETURN ONLY JSON.`;
     // ==================== GET AI STATUS ====================
 
     getAIStatus() {
+        const claudeConfigured = Boolean(process.env.ANTHROPIC_API_KEY);
+        const deepseekConfigured = Boolean(process.env.DEEPSEEK_API_KEY);
+        const claudeCooldown = this.getProviderCooldown('claude');
+        const deepseekCooldown = this.getProviderCooldown('deepseek');
+        const claudeHealth = {
+            ...this.providerHealth.claude,
+            cooldownUntil: claudeCooldown.until,
+            cooldownRemainingMs: claudeCooldown.remainingMs,
+            cooldownReason: claudeCooldown.reason,
+            cooldownType: claudeCooldown.type,
+            status: claudeCooldown.active
+                ? 'cooldown'
+                : this.providerHealth.claude.status
+        };
+        const deepseekHealth = {
+            ...this.providerHealth.deepseek,
+            cooldownUntil: deepseekCooldown.until,
+            cooldownRemainingMs: deepseekCooldown.remainingMs,
+            cooldownReason: deepseekCooldown.reason,
+            cooldownType: deepseekCooldown.type,
+            status: deepseekCooldown.active
+                ? 'cooldown'
+                : this.providerHealth.deepseek.status
+        };
+
+        const claudeOperational = claudeConfigured && !claudeCooldown.active && claudeHealth.status !== 'unhealthy';
+        const deepseekOperational = deepseekConfigured && !deepseekCooldown.active && deepseekHealth.status !== 'unhealthy';
         let ready = false;
+        let fullyReady = false;
         let setupHint = '';
-        const claudeReady = Boolean(process.env.ANTHROPIC_API_KEY);
-        const deepseekReady = Boolean(process.env.DEEPSEEK_API_KEY);
 
         if (this.aiProvider === 'ensemble') {
-            ready = claudeReady && deepseekReady;
-            setupHint = ready
+            fullyReady = claudeOperational && deepseekOperational;
+            ready = fullyReady || (this.allowPartialEnsemble && (claudeOperational || deepseekOperational));
+            setupHint = fullyReady
                 ? `Claude and DeepSeek independently review the market; ${this.ensembleJudge} performs final adjudication.`
-                : `Dual-AI mode needs both APIs. Claude: ${claudeReady ? 'ready' : 'missing'}; DeepSeek: ${deepseekReady ? 'ready' : 'missing'}.`;
+                : ready
+                    ? `Ensemble is degraded but operational through fallback. Claude: ${claudeHealth.status}; DeepSeek: ${deepseekHealth.status}.`
+                    : `No operational AI provider. Claude: ${claudeHealth.status}; DeepSeek: ${deepseekHealth.status}.`;
         } else if (this.aiProvider === 'claude') {
-            ready = claudeReady;
-            setupHint = ready
-                ? 'Claude API is configured.'
-                : 'Set ANTHROPIC_API_KEY.';
+            fullyReady = claudeOperational;
+            ready = claudeOperational || (this.allowPartialEnsemble && deepseekOperational);
+            setupHint = claudeOperational
+                ? 'Claude API is operational.'
+                : deepseekOperational
+                    ? 'Claude is unavailable; DeepSeek fallback is operational.'
+                    : 'Set/fix ANTHROPIC_API_KEY or configure DeepSeek fallback.';
         } else {
-            ready = deepseekReady;
+            fullyReady = deepseekOperational;
+            ready = deepseekOperational;
             setupHint = ready
-                ? 'DeepSeek API is configured.'
-                : 'Set DEEPSEEK_API_KEY.';
+                ? 'DeepSeek API is operational.'
+                : 'Set/fix DEEPSEEK_API_KEY.';
         }
 
         return {
             provider: this.aiProvider,
             model: this.model,
             ready,
+            fullyReady,
+            degraded: ready && !fullyReady,
             setupHint,
             ensembleJudge: this.ensembleJudge,
             requireCompleteEnsemble: this.requireCompleteEnsemble,
@@ -3006,7 +3921,11 @@ MAKE DECISION. RETURN ONLY JSON.`;
             allowPartialEnsemble: this.allowPartialEnsemble,
             claudeApiMode: this.claudeApiMode,
             ensemble: this.lastEnsemble,
-            providerHealth: this.providerHealth
+            providerHealth: {
+                claude: claudeHealth,
+                deepseek: deepseekHealth
+            },
+            usage: this.getAIUsageStatus()
         };
     }
 
@@ -3046,9 +3965,14 @@ MAKE DECISION. RETURN ONLY JSON.`;
             wsActive: this.wsActive,
             aiProvider: ai.provider,
             aiModel: ai.model,
-            aiReady: ai.ready
+            aiReady: ai.ready,
+            aiDegraded: ai.degraded,
+            aiUsage: ai.usage,
+            providerHealth: ai.providerHealth,
+            serverHealth: this.systemHealth
         };
     }
+
 }
 
 module.exports = new UltimateAITrader();
